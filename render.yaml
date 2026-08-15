@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: bizkit-india
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DB_PATH
+        value: /app/data/bizkit.db
+      - key: JWT_SECRET
+        generateValue: true
+    disk:
+      name: bizkit-data
+      mountPath: /app/data
+      sizeGB: 1

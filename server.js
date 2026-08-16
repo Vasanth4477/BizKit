@@ -8,7 +8,10 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET || JWT_SECRET.length < 32) { console.error("JWT_SECRET must be set and at least 32 characters long."); process.exit(1); }
-const db = new Database(process.env.DB_PATH || path.join(__dirname, "data", "bizkit.db"));
+const fs = require("fs");
+const dbPath = process.env.DB_PATH || path.join(__dirname, "data", "bizkit.db");
+fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+const db = new Database(dbPath);
 
 db.pragma("journal_mode = WAL");
 db.exec(`

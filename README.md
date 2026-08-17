@@ -31,3 +31,11 @@ Before production, add HTTPS, a managed database, secure secret storage, rate li
 This project now includes a Dockerfile and `render.yaml` for deployment on a persistent-disk web service. The SQLite database must live on persistent storage. Do not deploy this SQLite setup to an ephemeral filesystem.
 
 The deployment configuration generates a JWT secret automatically. Before going live, also add HTTPS, rate limiting, email verification, password reset, backups, monitoring, and a proper production database plan if usage grows.
+
+
+## Simple GitHub deployment structure
+
+This package intentionally keeps `index.html` in the repository root so it can be uploaded easily from GitHub mobile/web. The Express server serves this root `index.html`.
+
+## One-go product pass
+The frontend has been refreshed with clearer positioning, mobile-first workspace navigation, pricing, guide content, WhatsApp sharing, and a more connected business workflow. The existing API-backed authentication, customer/product data, invoices, quotations, and dashboard remain in place.

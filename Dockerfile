@@ -1,20 +1,9 @@
 FROM node:20-bookworm-slim
-
 WORKDIR /app
-
-# better-sqlite3 may need to compile from source when a prebuilt binary
-# is unavailable. Install the native build prerequisites used by node-gyp.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends python3 make g++ \
-    && rm -rf /var/lib/apt/lists/*
-
+RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++     && rm -rf /var/lib/apt/lists/*
 COPY package*.json ./
 RUN npm install --omit=dev
-
 COPY . .
-
 ENV NODE_ENV=production
-
 EXPOSE 3000
-
-CMD ["npm", "start"]
+CMD ["npm","start"]

@@ -8,10 +8,10 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
-      - key: DB_PATH
-        value: /app/data/bizkit.db
       - key: JWT_SECRET
         generateValue: true
+      - key: DB_PATH
+        value: /app/data/bizkit.db
     disk:
       name: bizkit-data
       mountPath: /app/data

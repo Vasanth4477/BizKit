@@ -1,5 +1,5 @@
 node_modules
-bizkit.db
+data/*.db
 *.log
 .env
 .git

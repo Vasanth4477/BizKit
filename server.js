@@ -10,7 +10,7 @@ const JWT_SECRET=process.env.JWT_SECRET;
 const DATABASE_URL=process.env.DATABASE_URL;
 if(!JWT_SECRET||JWT_SECRET.length<32) throw new Error('JWT_SECRET must be set and at least 32 characters');
 if(!DATABASE_URL) throw new Error('DATABASE_URL must be set');
-const pool=new Pool({connectionString:DATABASE_URL,ssl:process.env.PGSSL==='disable'?false:{rejectUnauthorized:false},max:5});
+const pool=new Pool({connectionString:DATABASE_URL,ssl:process.env.PGSSL==='disable'?false:{rejectUnauthorized:false},max:5,family:4,connectionTimeoutMillis:10000,keepAlive:true});
 const q=(text,params=[])=>pool.query(text,params);
 const rows=r=>r.rows;
 const row=r=>r.rows[0];
@@ -50,6 +50,6 @@ app.put('/api/quotations/:id',auth,async(req,res)=>{const b=req.body||{},c=calcD
 app.delete('/api/quotations/:id',auth,async(req,res)=>{await q('DELETE FROM quotations WHERE id=$1 AND user_id=$2',[req.params.id,req.user.id]);res.json({ok:true})});
 app.get('/api/dashboard',auth,async(req,res)=>{const invoices=rows(await q('SELECT status,total FROM invoices WHERE user_id=$1',[req.user.id])),expenses=rows(await q('SELECT amount FROM expenses WHERE user_id=$1',[req.user.id])),products=rows(await q('SELECT stock,low_stock_threshold,track_stock FROM products WHERE user_id=$1',[req.user.id])),customers=Number(row(await q('SELECT COUNT(*)::int AS c FROM customers WHERE user_id=$1',[req.user.id])).c),revenue=invoices.filter(x=>x.status==='paid').reduce((a,x)=>a+moneySafe(x.total),0),outstanding=invoices.filter(x=>['unpaid','overdue','partial'].includes(x.status)).reduce((a,x)=>a+moneySafe(x.total),0),totalExpenses=expenses.reduce((a,x)=>a+moneySafe(x.amount),0),lowStock=products.filter(x=>x.track_stock&&moneySafe(x.stock)<=moneySafe(x.low_stock_threshold)).length;res.json({customers,products:products.length,invoices:invoices.length,revenue,outstanding,totalExpenses,profitEstimate:revenue-totalExpenses,lowStock})});
 app.get('/api/reports/monthly',auth,async(req,res)=>{const invoices=rows(await q(`SELECT to_char(invoice_date,'YYYY-MM') AS month,status,total FROM invoices WHERE user_id=$1 ORDER BY month DESC`,[req.user.id])),expenses=rows(await q(`SELECT to_char(expense_date,'YYYY-MM') AS month,SUM(amount) AS total FROM expenses WHERE user_id=$1 GROUP BY month ORDER BY month DESC`,[req.user.id]));res.json({invoices,expenses})});
-app.get('/api/health',async(req,res)=>{try{await q('SELECT 1');res.json({ok:true,service:'BizKit',version:'0.4.0',database:'postgresql'})}catch(e){res.status(503).json({ok:false,error:'Database unavailable'})}});
+app.get('/api/health',async(req,res)=>{try{await q('SELECT 1');res.json({ok:true,service:'BizKit',version:'0.4.1',database:'postgresql'})}catch(e){res.status(503).json({ok:false,error:'Database unavailable'})}});
 app.get('/{*splat}',(req,res)=>res.sendFile(path.join(__dirname,'index.html')));
 initDb().then(()=>app.listen(PORT,()=>console.log(`BizKit PostgreSQL running on port ${PORT}`))).catch(e=>{console.error('Database initialization failed:',e);process.exit(1)});

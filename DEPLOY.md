@@ -1,12 +1,10 @@
-# Deploy BizKit 0.6.0
+# BizKit 0.6.1 deployment
 
-1. Replace your GitHub repository contents with this package and commit to `main`.
-2. Keep the existing Render service. Do not create another service.
-3. In Render → BizKit → Environment, keep `JWT_SECRET` and the working Supabase Session Pooler `DATABASE_URL` (pooler host, port 5432).
-4. Optional: add `RAZORPAY_KEY_ID` and `RAZORPAY_KEY_SECRET` for payment links. Never commit these credentials.
-5. Save/rebuild/deploy.
-6. Open `/api/health`. It should return `ok:true`, `database:"postgresql"`, version `0.6.0` and the feature list.
-7. Test `/signup`, `/app`, `/app/customers`, `/app/products`, `/app/invoices`, `/app/payments`, and `/app/reports`.
+## GitHub
+Upload the CONTENTS of this package to the ROOT of `Vasanth4477/BizKit` on the `main` branch. Do not nest the files in another folder. Root copies of `app.html`, `app.js`, `styles.css`, and `404.html` are intentional.
 
-## Security
-Use a newly rotated Supabase password if the old one was ever exposed. Never put `DATABASE_URL`, JWT secrets, Razorpay keys or any other secrets in GitHub or frontend JavaScript.
+## Render
+Use the existing BizKit service. Keep `DATABASE_URL` and `JWT_SECRET` in Render Environment Variables. Do not put secrets in GitHub.
+
+## Health check
+Open `/api/health`. Expected response begins with `\"ok\":true` and reports version `0.6.1` and database `postgresql`.

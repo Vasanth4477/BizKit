@@ -1,4 +1,4 @@
-# BizKit India 0.6.0
+# BizKit India 0.6.1
 
 A multi-page, PostgreSQL-backed small-business workspace for Indian businesses.
 

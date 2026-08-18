@@ -39,7 +39,9 @@ async function logActivity(userId,type,title,meta={}){try{await q('INSERT INTO a
 
 app.use((req,res,next)=>{res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','strict-origin-when-cross-origin');res.setHeader('X-Frame-Options','SAMEORIGIN');next()});
 app.use(express.json({limit:'1mb'}));
-app.use(express.static(path.join(__dirname,'public')));
+// Deployment-safe asset root: works whether GitHub preserves /public or flattens files into repository root.
+const ASSET_ROOT = require('fs').existsSync(path.join(__dirname,'public','app.html')) ? path.join(__dirname,'public') : __dirname;
+app.use(express.static(ASSET_ROOT));
 
 // Auth
 app.post('/api/auth/signup',async(req,res)=>{try{const{name,email,password}=req.body||{};if(!name||!email||!password)return res.status(400).json({error:'Name, email and password are required'});if(password.length<6)return res.status(400).json({error:'Password must contain at least 6 characters'});const em=normalizeEmail(email),hash=await bcrypt.hash(password,12),u=row(await q('INSERT INTO users(name,email,password_hash) VALUES($1,$2,$3) RETURNING id,name,email',[String(name).trim(),em,hash]));await q('INSERT INTO business_profiles(user_id,business_name,email) VALUES($1,$2,$3)',[u.id,String(name).trim(),em]);await q('INSERT INTO integration_settings(user_id) VALUES($1) ON CONFLICT DO NOTHING',[u.id]);res.status(201).json({user:u,token:tokenFor(u)})}catch(e){if(e.code==='23505')return res.status(409).json({error:'An account with this email already exists'});console.error(e);res.status(500).json({error:'Could not create account'})}});
@@ -107,11 +109,11 @@ app.get('/api/search',auth,async(req,res)=>{const t=`%${String(req.query.q||'').
 app.post('/api/integrations/razorpay/payment-link',auth,async(req,res)=>{const key=process.env.RAZORPAY_KEY_ID,secret=process.env.RAZORPAY_KEY_SECRET;if(!key||!secret)return res.status(503).json({error:'Razorpay is not configured yet. Add RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET in Render.'});const b=req.body||{},amount=moneyInt(b.amount);if(amount<100)return res.status(400).json({error:'Amount must be at least ₹1.'});const reference=String(b.referenceId||`BIZ-${Date.now()}`).slice(0,40);try{const resp=await fetch('https://api.razorpay.com/v1/payment_links',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Basic '+Buffer.from(`${key}:${secret}`).toString('base64')},body:JSON.stringify({amount,currency:'INR',reference_id:reference,description:String(b.description||'BizKit payment'),customer:{name:String(b.customerName||'Customer'),contact:String(b.customerPhone||''),email:String(b.customerEmail||'')},notify:{sms:false,email:false},reminder_enable:true})});const data=await resp.json();if(!resp.ok)return res.status(resp.status).json({error:data?.error?.description||'Razorpay payment link creation failed'});res.json({id:data.id,short_url:data.short_url,status:data.status})}catch(e){res.status(502).json({error:'Unable to reach Razorpay'})}});
 
 app.get('/api/integrations/status',auth,async(req,res)=>res.json({razorpay:Boolean(process.env.RAZORPAY_KEY_ID&&process.env.RAZORPAY_KEY_SECRET),whatsapp:Boolean(process.env.WHATSAPP_TOKEN&&process.env.WHATSAPP_PHONE_NUMBER_ID),email:Boolean(process.env.SMTP_HOST&&process.env.SMTP_USER)}));
-app.get('/api/health',async(req,res)=>{try{await q('SELECT 1');res.json({ok:true,service:'BizKit',version:'0.6.0',database:'postgresql',features:['dashboard','invoices','quotations','customers','products','inventory','suppliers','purchases','payments','expenses','reports','search','razorpay-adapter']})}catch(e){res.status(503).json({ok:false,error:'Database unavailable'})}});
+app.get('/api/health',async(req,res)=>{try{await q('SELECT 1');res.json({ok:true,service:'BizKit',version:'0.6.1',database:'postgresql',features:['dashboard','invoices','quotations','customers','products','inventory','suppliers','purchases','payments','expenses','reports','search','razorpay-adapter']})}catch(e){res.status(503).json({ok:false,error:'Database unavailable'})}});
 
 // Page routes
 for(const p of ['','/','/features','/pricing','/resources','/login','/signup','/app','/app/invoices','/app/invoices/new','/app/quotations','/app/customers','/app/products','/app/purchases','/app/payments','/app/expenses','/app/reports','/app/tools','/app/settings','/app/integrations']){
-  app.get(p,(req,res)=>res.sendFile(path.join(__dirname,'public','app.html')))
+  app.get(p,(req,res)=>res.sendFile(path.join(ASSET_ROOT,'app.html')))
 }
-app.use((req,res)=>res.status(404).sendFile(path.join(__dirname,'public','404.html')));
-initDb().then(()=>app.listen(PORT,()=>console.log(`BizKit 0.6.0 running on port ${PORT}`))).catch(e=>{console.error('Database initialization failed:',e);process.exit(1)});
+app.use((req,res)=>res.status(404).sendFile(path.join(ASSET_ROOT,'404.html')));
+initDb().then(()=>app.listen(PORT,()=>console.log(`BizKit 0.6.1 running on port ${PORT}`))).catch(e=>{console.error('Database initialization failed:',e);process.exit(1)});

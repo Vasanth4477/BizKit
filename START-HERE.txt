@@ -1,0 +1,15 @@
+BIZKIT 0.6.1 - DEPLOYMENT FIX
+
+This package is designed to work even if GitHub's web uploader flattens folders.
+
+IMPORTANT:
+1. Upload ALL files in this ZIP to the ROOT of the GitHub Vasanth4477/BizKit repository.
+2. Do not upload the ZIP itself.
+3. Do not create a new Render service.
+4. Keep DATABASE_URL and JWT_SECRET only in Render Environment Variables.
+5. Commit to the main branch.
+6. Wait for Render to deploy.
+7. Open https://<your-render-service>/api/health
+
+The server now detects either /public/app.html or a root app.html automatically.
+The root copies of app.html, app.js, styles.css and 404.html are intentional.

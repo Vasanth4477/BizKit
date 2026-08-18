@@ -10,9 +10,5 @@ services:
         value: production
       - key: JWT_SECRET
         generateValue: true
-      - key: DB_PATH
-        value: /app/data/bizkit.db
-    disk:
-      name: bizkit-data
-      mountPath: /app/data
-      sizeGB: 1
+      - key: DATABASE_URL
+        sync: false

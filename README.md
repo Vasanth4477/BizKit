@@ -1,25 +1,21 @@
-# BizKit India
+# BizKit India - PostgreSQL edition
 
-BizKit is a mobile-first business workspace for Indian micro and small businesses.
+This build moves BizKit from browser/SQLite persistence to PostgreSQL.
 
-## Included
-- Landing page with real product positioning
-- Logo button returns to home
-- GST, profit, break-even, salary, P&L and business-name tools
-- Invoice + quotation workflows
-- WhatsApp share
-- Customer management
-- Product catalogue with HSN/SAC, GST and basic stock tracking
-- Expense tracking
-- Dashboard and simple reports
-- Cloud authentication/API
-- Render + Docker deployment
-- Free / Pro / Business pricing framing
+## Required Render environment variables
+- `DATABASE_URL`: PostgreSQL connection string
+- `JWT_SECRET`: long random secret (Render can generate this)
+- `NODE_ENV=production`
 
-## Production work still requiring external services
-- Payment gateway and subscription entitlements
-- Email verification / password reset
-- E-invoice / e-way bill integrations
-- Tally export
-- Managed database as usage grows
-- Privacy/Terms/Refund pages and production analytics
+## Supabase Free
+Create a Supabase free project and use its PostgreSQL connection string. Do not paste the real URL/password into GitHub or chat.
+
+## Deploy
+1. Put these files in the GitHub repository connected to your existing Render service.
+2. In Render > BizKit > Environment, add `DATABASE_URL` with your PostgreSQL connection string.
+3. Ensure `JWT_SECRET` exists.
+4. Redeploy.
+5. Check `/api/health` and confirm database is `postgresql`.
+6. Create an account and test persistence.
+
+Tables are created automatically on first successful database connection.

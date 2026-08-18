@@ -1,295 +1,55 @@
-const express = require("express");
-const path = require("path");
-const fs = require("fs");
-const bcrypt = require("bcryptjs");
-const jwt = require("jsonwebtoken");
-const Database = require("better-sqlite3");
-
-const app = express();
-app.disable("x-powered-by");
-
-const PORT = process.env.PORT || 3000;
-const JWT_SECRET = process.env.JWT_SECRET;
-if (!JWT_SECRET || JWT_SECRET.length < 32) {
-  console.error("JWT_SECRET must be set and at least 32 characters long.");
-  process.exit(1);
-}
-
-const dbPath = process.env.DB_PATH || path.join(__dirname, "data", "bizkit.db");
-fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-const db = new Database(dbPath);
-db.pragma("journal_mode = WAL");
-db.pragma("foreign_keys = ON");
-
-db.exec(`
-CREATE TABLE IF NOT EXISTS users(
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT NOT NULL,
-  email TEXT NOT NULL UNIQUE,
-  password_hash TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE TABLE IF NOT EXISTS business_profiles(
-  user_id INTEGER PRIMARY KEY,
-  business_name TEXT,
-  business_type TEXT,
-  phone TEXT,
-  email TEXT,
-  gstin TEXT,
-  address TEXT,
-  state TEXT,
-  logo_url TEXT,
-  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
-);
-CREATE TABLE IF NOT EXISTS customers(
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id INTEGER NOT NULL,
-  name TEXT NOT NULL,
-  phone TEXT,
-  email TEXT,
-  address TEXT,
-  notes TEXT,
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
-);
-CREATE TABLE IF NOT EXISTS products(
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id INTEGER NOT NULL,
-  name TEXT NOT NULL,
-  sku TEXT,
-  hsn_sac TEXT,
-  price REAL NOT NULL DEFAULT 0,
-  purchase_price REAL NOT NULL DEFAULT 0,
-  gst_rate REAL NOT NULL DEFAULT 18,
-  stock REAL NOT NULL DEFAULT 0,
-  low_stock_threshold REAL NOT NULL DEFAULT 5,
-  track_stock INTEGER NOT NULL DEFAULT 1,
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
-);
-CREATE TABLE IF NOT EXISTS invoices(
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id INTEGER NOT NULL,
-  invoice_no TEXT NOT NULL,
-  invoice_date TEXT,
-  due_date TEXT,
-  customer_id INTEGER,
-  customer_name TEXT,
-  customer_phone TEXT,
-  customer_address TEXT,
-  gst_rate REAL NOT NULL DEFAULT 0,
-  discount REAL NOT NULL DEFAULT 0,
-  items_json TEXT NOT NULL DEFAULT '[]',
-  subtotal REAL NOT NULL DEFAULT 0,
-  gst_amount REAL NOT NULL DEFAULT 0,
-  total REAL NOT NULL DEFAULT 0,
-  status TEXT NOT NULL DEFAULT 'unpaid',
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
-);
-CREATE TABLE IF NOT EXISTS quotations(
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id INTEGER NOT NULL,
-  quote_no TEXT NOT NULL,
-  quote_date TEXT,
-  valid_until TEXT,
-  customer_id INTEGER,
-  customer_name TEXT,
-  customer_phone TEXT,
-  customer_address TEXT,
-  gst_rate REAL NOT NULL DEFAULT 0,
-  discount REAL NOT NULL DEFAULT 0,
-  items_json TEXT NOT NULL DEFAULT '[]',
-  subtotal REAL NOT NULL DEFAULT 0,
-  gst_amount REAL NOT NULL DEFAULT 0,
-  total REAL NOT NULL DEFAULT 0,
-  status TEXT NOT NULL DEFAULT 'draft',
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
-);
-CREATE TABLE IF NOT EXISTS expenses(
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id INTEGER NOT NULL,
-  expense_date TEXT,
-  category TEXT NOT NULL,
-  amount REAL NOT NULL DEFAULT 0,
-  note TEXT,
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
-);
-`);
-
-app.use((req,res,next)=>{
-  res.setHeader("X-Content-Type-Options","nosniff");
-  res.setHeader("Referrer-Policy","strict-origin-when-cross-origin");
-  res.setHeader("X-Frame-Options","SAMEORIGIN");
-  next();
-});
-app.use(express.json({limit:"1mb"}));
-app.use(express.static(__dirname));
-
-const normalizeEmail = e => String(e||"").trim().toLowerCase();
-const tokenFor = user => jwt.sign({id:user.id,email:user.email}, JWT_SECRET, {expiresIn:"7d"});
-function auth(req,res,next){
-  const h=req.headers.authorization||"";
-  if(!h.startsWith("Bearer ")) return res.status(401).json({error:"Authentication required"});
-  try{ req.user=jwt.verify(h.slice(7), JWT_SECRET); next(); }
-  catch{ res.status(401).json({error:"Invalid or expired session"}); }
-}
-function calcDoc(body){
-  const items=Array.isArray(body.items)?body.items.map(x=>({
-    productId:x.productId||null,
-    name:String(x.name||"Item"),
-    qty:Number(x.qty)||0,
-    rate:Number(x.rate)||0,
-    gstRate:Number(x.gstRate ?? body.gstRate ?? 0)||0,
-    amount:(Number(x.qty)||0)*(Number(x.rate)||0)
-  })):[];
-  const subtotal=items.reduce((a,x)=>a+x.amount,0);
-  const discount=Math.max(0,Number(body.discount)||0);
-  const gstRate=Math.max(0,Number(body.gstRate)||0);
-  const taxable=Math.max(0,subtotal-discount);
-  const gstAmount=taxable*gstRate/100;
-  return {items,subtotal,discount,gstRate,gstAmount,total:taxable+gstAmount};
-}
-function dateISO(d=new Date()){ return new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10); }
-
-/* Auth */
-app.post("/api/auth/signup", async (req,res)=>{
-  const {name,email,password}=req.body||{};
-  if(!name||!email||!password) return res.status(400).json({error:"Name, email and password are required"});
-  if(password.length<6) return res.status(400).json({error:"Password must contain at least 6 characters"});
-  const em=normalizeEmail(email);
-  try{
-    const hash=await bcrypt.hash(password,12);
-    const info=db.prepare("INSERT INTO users(name,email,password_hash) VALUES(?,?,?)").run(String(name).trim(),em,hash);
-    db.prepare("INSERT INTO business_profiles(user_id,business_name,email) VALUES(?,?,?)").run(info.lastInsertRowid,String(name).trim(),em);
-    const user={id:Number(info.lastInsertRowid),name:String(name).trim(),email:em};
-    res.status(201).json({user,token:tokenFor(user)});
-  }catch(e){
-    if(String(e).includes("UNIQUE")) return res.status(409).json({error:"An account with this email already exists"});
-    res.status(500).json({error:"Could not create account"});
-  }
-});
-app.post("/api/auth/login", async (req,res)=>{
-  const em=normalizeEmail(req.body?.email), password=req.body?.password||"";
-  const u=db.prepare("SELECT * FROM users WHERE email=?").get(em);
-  if(!u || !(await bcrypt.compare(password,u.password_hash))) return res.status(401).json({error:"Email or password is incorrect"});
-  const user={id:u.id,name:u.name,email:u.email};
-  res.json({user,token:tokenFor(user)});
-});
-app.get("/api/me",auth,(req,res)=>res.json({user:db.prepare("SELECT id,name,email,created_at FROM users WHERE id=?").get(req.user.id)}));
-
-/* Profile */
-app.get("/api/profile",auth,(req,res)=>{
-  const p=db.prepare("SELECT business_name as businessName,business_type as businessType,phone,email,gstin,address,state,logo_url as logoUrl FROM business_profiles WHERE user_id=?").get(req.user.id)||{};
-  res.json({profile:p});
-});
-app.put("/api/profile",auth,(req,res)=>{
-  const p=req.body||{};
-  db.prepare(`INSERT INTO business_profiles(user_id,business_name,business_type,phone,email,gstin,address,state,logo_url)
-    VALUES(?,?,?,?,?,?,?,?,?)
-    ON CONFLICT(user_id) DO UPDATE SET business_name=excluded.business_name,business_type=excluded.business_type,phone=excluded.phone,email=excluded.email,gstin=excluded.gstin,address=excluded.address,state=excluded.state,logo_url=excluded.logo_url`)
-    .run(req.user.id,p.businessName||"",p.businessType||"",p.phone||"",p.email||"",p.gstin||"",p.address||"",p.state||"",p.logoUrl||"");
-  res.json({ok:true});
-});
-
-/* Customers */
-app.get("/api/customers",auth,(req,res)=>res.json({customers:db.prepare("SELECT * FROM customers WHERE user_id=? ORDER BY id DESC").all(req.user.id)}));
-app.post("/api/customers",auth,(req,res)=>{
-  const b=req.body||{}; if(!b.name) return res.status(400).json({error:"Customer name is required"});
-  const i=db.prepare("INSERT INTO customers(user_id,name,phone,email,address,notes) VALUES(?,?,?,?,?,?)").run(req.user.id,b.name,b.phone||"",b.email||"",b.address||"",b.notes||"");
-  res.status(201).json({id:i.lastInsertRowid});
-});
-app.put("/api/customers/:id",auth,(req,res)=>{
-  const b=req.body||{}; const r=db.prepare("UPDATE customers SET name=?,phone=?,email=?,address=?,notes=? WHERE id=? AND user_id=?").run(b.name,b.phone||"",b.email||"",b.address||"",b.notes||"",req.params.id,req.user.id);
-  if(!r.changes) return res.status(404).json({error:"Customer not found"});
-  res.json({ok:true});
-});
-app.delete("/api/customers/:id",auth,(req,res)=>{db.prepare("DELETE FROM customers WHERE id=? AND user_id=?").run(req.params.id,req.user.id);res.json({ok:true})});
-
-/* Products / inventory */
-app.get("/api/products",auth,(req,res)=>res.json({products:db.prepare("SELECT * FROM products WHERE user_id=? ORDER BY id DESC").all(req.user.id)}));
-app.post("/api/products",auth,(req,res)=>{
-  const b=req.body||{}; if(!b.name) return res.status(400).json({error:"Product/service name is required"});
-  const i=db.prepare(`INSERT INTO products(user_id,name,sku,hsn_sac,price,purchase_price,gst_rate,stock,low_stock_threshold,track_stock)
-    VALUES(?,?,?,?,?,?,?,?,?,?)`).run(req.user.id,b.name,b.sku||"",b.hsnSac||"",Number(b.price)||0,Number(b.purchasePrice)||0,Number(b.gstRate)||18,Number(b.stock)||0,Number(b.lowStockThreshold)||5,b.trackStock===false?0:1);
-  res.status(201).json({id:i.lastInsertRowid});
-});
-app.put("/api/products/:id",auth,(req,res)=>{
-  const b=req.body||{}; const r=db.prepare(`UPDATE products SET name=?,sku=?,hsn_sac=?,price=?,purchase_price=?,gst_rate=?,stock=?,low_stock_threshold=?,track_stock=? WHERE id=? AND user_id=?`)
-    .run(b.name,b.sku||"",b.hsnSac||"",Number(b.price)||0,Number(b.purchasePrice)||0,Number(b.gstRate)||18,Number(b.stock)||0,Number(b.lowStockThreshold)||5,b.trackStock===false?0:1,req.params.id,req.user.id);
-  if(!r.changes)return res.status(404).json({error:"Product not found"});res.json({ok:true});
-});
-app.delete("/api/products/:id",auth,(req,res)=>{db.prepare("DELETE FROM products WHERE id=? AND user_id=?").run(req.params.id,req.user.id);res.json({ok:true})});
-
-/* Expenses */
-app.get("/api/expenses",auth,(req,res)=>res.json({expenses:db.prepare("SELECT * FROM expenses WHERE user_id=? ORDER BY id DESC").all(req.user.id)}));
-app.post("/api/expenses",auth,(req,res)=>{
-  const b=req.body||{};if(!b.category||!(Number(b.amount)>0))return res.status(400).json({error:"Category and amount are required"});
-  const i=db.prepare("INSERT INTO expenses(user_id,expense_date,category,amount,note) VALUES(?,?,?,?,?)").run(req.user.id,b.expenseDate||dateISO(),b.category,Number(b.amount)||0,b.note||"");
-  res.status(201).json({id:i.lastInsertRowid});
-});
-app.delete("/api/expenses/:id",auth,(req,res)=>{db.prepare("DELETE FROM expenses WHERE id=? AND user_id=?").run(req.params.id,req.user.id);res.json({ok:true})});
-
-/* Invoices */
-app.get("/api/invoices",auth,(req,res)=>res.json({invoices:db.prepare("SELECT * FROM invoices WHERE user_id=? ORDER BY id DESC").all(req.user.id).map(r=>({...r,items:JSON.parse(r.items_json)}))}));
-app.post("/api/invoices",auth,(req,res)=>{
-  const b=req.body||{}, c=calcDoc(b);
-  const i=db.prepare(`INSERT INTO invoices(user_id,invoice_no,invoice_date,due_date,customer_id,customer_name,customer_phone,customer_address,gst_rate,discount,items_json,subtotal,gst_amount,total,status)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(req.user.id,b.invoiceNo||"INV-001",b.invoiceDate||dateISO(),b.dueDate||"",b.customerId||null,b.customerName||"",b.customerPhone||"",b.customerAddress||"",c.gstRate,c.discount,JSON.stringify(c.items),c.subtotal,c.gstAmount,c.total,b.status||"unpaid");
-  // Reduce tracked product stock.
-  for(const it of c.items){ if(it.productId){ db.prepare("UPDATE products SET stock=stock-? WHERE id=? AND user_id=? AND track_stock=1").run(it.qty,it.productId,req.user.id); } }
-  res.status(201).json({id:i.lastInsertRowid,total:c.total});
-});
-app.put("/api/invoices/:id",auth,(req,res)=>{
-  const b=req.body||{},c=calcDoc(b);
-  const r=db.prepare(`UPDATE invoices SET invoice_no=?,invoice_date=?,due_date=?,customer_id=?,customer_name=?,customer_phone=?,customer_address=?,gst_rate=?,discount=?,items_json=?,subtotal=?,gst_amount=?,total=?,status=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?`)
-    .run(b.invoiceNo||"INV-001",b.invoiceDate||"",b.dueDate||"",b.customerId||null,b.customerName||"",b.customerPhone||"",b.customerAddress||"",c.gstRate,c.discount,JSON.stringify(c.items),c.subtotal,c.gstAmount,c.total,b.status||"unpaid",req.params.id,req.user.id);
-  if(!r.changes)return res.status(404).json({error:"Invoice not found"});res.json({ok:true});
-});
-app.patch("/api/invoices/:id/status",auth,(req,res)=>{
-  const allowed=["unpaid","paid","overdue","cancelled","partial"];const status=allowed.includes(req.body?.status)?req.body.status:"unpaid";
-  db.prepare("UPDATE invoices SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?").run(status,req.params.id,req.user.id);res.json({ok:true});
-});
-app.delete("/api/invoices/:id",auth,(req,res)=>{db.prepare("DELETE FROM invoices WHERE id=? AND user_id=?").run(req.params.id,req.user.id);res.json({ok:true})});
-
-/* Quotations */
-app.get("/api/quotations",auth,(req,res)=>res.json({quotations:db.prepare("SELECT * FROM quotations WHERE user_id=? ORDER BY id DESC").all(req.user.id).map(r=>({...r,items:JSON.parse(r.items_json)}))}));
-app.post("/api/quotations",auth,(req,res)=>{
-  const b=req.body||{},c=calcDoc(b);
-  const i=db.prepare(`INSERT INTO quotations(user_id,quote_no,quote_date,valid_until,customer_id,customer_name,customer_phone,customer_address,gst_rate,discount,items_json,subtotal,gst_amount,total,status)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(req.user.id,b.quoteNo||"QUO-001",b.quoteDate||dateISO(),b.validUntil||"",b.customerId||null,b.customerName||"",b.customerPhone||"",b.customerAddress||"",c.gstRate,c.discount,JSON.stringify(c.items),c.subtotal,c.gstAmount,c.total,b.status||"draft");
-  res.status(201).json({id:i.lastInsertRowid,total:c.total});
-});
-app.put("/api/quotations/:id",auth,(req,res)=>{
-  const b=req.body||{},c=calcDoc(b);
-  const r=db.prepare(`UPDATE quotations SET quote_no=?,quote_date=?,valid_until=?,customer_id=?,customer_name=?,customer_phone=?,customer_address=?,gst_rate=?,discount=?,items_json=?,subtotal=?,gst_amount=?,total=?,status=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?`)
-    .run(b.quoteNo||"QUO-001",b.quoteDate||"",b.validUntil||"",b.customerId||null,b.customerName||"",b.customerPhone||"",b.customerAddress||"",c.gstRate,c.discount,JSON.stringify(c.items),c.subtotal,c.gstAmount,c.total,b.status||"draft",req.params.id,req.user.id);
-  if(!r.changes)return res.status(404).json({error:"Quotation not found"});res.json({ok:true});
-});
-app.delete("/api/quotations/:id",auth,(req,res)=>{db.prepare("DELETE FROM quotations WHERE id=? AND user_id=?").run(req.params.id,req.user.id);res.json({ok:true})});
-
-/* Dashboard + reports */
-app.get("/api/dashboard",auth,(req,res)=>{
-  const invoices=db.prepare("SELECT status,total FROM invoices WHERE user_id=?").all(req.user.id);
-  const expenses=db.prepare("SELECT amount FROM expenses WHERE user_id=?").all(req.user.id);
-  const products=db.prepare("SELECT stock,low_stock_threshold,track_stock FROM products WHERE user_id=?").all(req.user.id);
-  const customers=db.prepare("SELECT COUNT(*) c FROM customers WHERE user_id=?").get(req.user.id).c;
-  const revenue=invoices.filter(x=>x.status==="paid").reduce((a,x)=>a+x.total,0);
-  const outstanding=invoices.filter(x=>["unpaid","overdue","partial"].includes(x.status)).reduce((a,x)=>a+x.total,0);
-  const totalExpenses=expenses.reduce((a,x)=>a+x.amount,0);
-  const lowStock=products.filter(x=>x.track_stock&&x.stock<=x.low_stock_threshold).length;
-  res.json({customers,products:products.length,invoices:invoices.length,revenue,outstanding,totalExpenses,profitEstimate:revenue-totalExpenses,lowStock});
-});
-app.get("/api/reports/monthly",auth,(req,res)=>{
-  const invoices=db.prepare(`SELECT substr(invoice_date,1,7) month,status,total FROM invoices WHERE user_id=? ORDER BY month DESC`).all(req.user.id);
-  const expenses=db.prepare(`SELECT substr(expense_date,1,7) month, SUM(amount) total FROM expenses WHERE user_id=? GROUP BY month ORDER BY month DESC`).all(req.user.id);
-  res.json({invoices,expenses});
-});
-app.get("/api/health",(req,res)=>res.json({ok:true,service:"BizKit",version:"0.3.0"}));
-
-app.get("/{*splat}",(req,res)=>res.sendFile(path.join(__dirname,"index.html")));
-app.listen(PORT,()=>console.log(`BizKit running on port ${PORT}`));
+const express=require('express');
+const path=require('path');
+const bcrypt=require('bcryptjs');
+const jwt=require('jsonwebtoken');
+const {Pool}=require('pg');
+const app=express();
+app.disable('x-powered-by');
+const PORT=process.env.PORT||3000;
+const JWT_SECRET=process.env.JWT_SECRET;
+const DATABASE_URL=process.env.DATABASE_URL;
+if(!JWT_SECRET||JWT_SECRET.length<32) throw new Error('JWT_SECRET must be set and at least 32 characters');
+if(!DATABASE_URL) throw new Error('DATABASE_URL must be set');
+const pool=new Pool({connectionString:DATABASE_URL,ssl:process.env.PGSSL==='disable'?false:{rejectUnauthorized:false},max:5});
+const q=(text,params=[])=>pool.query(text,params);
+const rows=r=>r.rows;
+const row=r=>r.rows[0];
+const moneySafe=n=>Number(n)||0;
+function dateISO(d=new Date()){return new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10)}
+function tokenFor(u){return jwt.sign({id:u.id,email:u.email},JWT_SECRET,{expiresIn:'7d'})}
+function auth(req,res,next){const h=req.headers.authorization||'';if(!h.startsWith('Bearer '))return res.status(401).json({error:'Authentication required'});try{req.user=jwt.verify(h.slice(7),JWT_SECRET);next()}catch(e){res.status(401).json({error:'Invalid or expired session'})}}
+function calcDoc(b){const items=Array.isArray(b.items)?b.items.map(x=>({productId:x.productId||null,name:String(x.name||'Item'),qty:moneySafe(x.qty),rate:moneySafe(x.rate),gstRate:moneySafe(x.gstRate??b.gstRate),amount:moneySafe(x.qty)*moneySafe(x.rate)})):[];const subtotal=items.reduce((a,x)=>a+x.amount,0);const discount=Math.max(0,moneySafe(b.discount));const gstRate=Math.max(0,moneySafe(b.gstRate));const taxable=Math.max(0,subtotal-discount);const gstAmount=taxable*gstRate/100;return{items,subtotal,discount,gstRate,gstAmount,total:taxable+gstAmount}}
+async function initDb(){await q(`CREATE TABLE IF NOT EXISTS users(id BIGSERIAL PRIMARY KEY,name TEXT NOT NULL,email TEXT NOT NULL UNIQUE,password_hash TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());CREATE TABLE IF NOT EXISTS business_profiles(user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,business_name TEXT,business_type TEXT,phone TEXT,email TEXT,gstin TEXT,address TEXT,state TEXT,logo_url TEXT);CREATE TABLE IF NOT EXISTS customers(id BIGSERIAL PRIMARY KEY,user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,name TEXT NOT NULL,phone TEXT,email TEXT,address TEXT,notes TEXT,created_at TIMESTAMPTZ DEFAULT NOW());CREATE TABLE IF NOT EXISTS products(id BIGSERIAL PRIMARY KEY,user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,name TEXT NOT NULL,sku TEXT,hsn_sac TEXT,price DOUBLE PRECISION NOT NULL DEFAULT 0,purchase_price DOUBLE PRECISION NOT NULL DEFAULT 0,gst_rate DOUBLE PRECISION NOT NULL DEFAULT 18,stock DOUBLE PRECISION NOT NULL DEFAULT 0,low_stock_threshold DOUBLE PRECISION NOT NULL DEFAULT 5,track_stock BOOLEAN NOT NULL DEFAULT TRUE,created_at TIMESTAMPTZ DEFAULT NOW());CREATE TABLE IF NOT EXISTS invoices(id BIGSERIAL PRIMARY KEY,user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,invoice_no TEXT NOT NULL,invoice_date DATE,due_date DATE,customer_id BIGINT,customer_name TEXT,customer_phone TEXT,customer_address TEXT,gst_rate DOUBLE PRECISION NOT NULL DEFAULT 0,discount DOUBLE PRECISION NOT NULL DEFAULT 0,items_json JSONB NOT NULL DEFAULT '[]'::jsonb,subtotal DOUBLE PRECISION NOT NULL DEFAULT 0,gst_amount DOUBLE PRECISION NOT NULL DEFAULT 0,total DOUBLE PRECISION NOT NULL DEFAULT 0,status TEXT NOT NULL DEFAULT 'unpaid',created_at TIMESTAMPTZ DEFAULT NOW(),updated_at TIMESTAMPTZ DEFAULT NOW());CREATE TABLE IF NOT EXISTS quotations(id BIGSERIAL PRIMARY KEY,user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,quote_no TEXT NOT NULL,quote_date DATE,valid_until DATE,customer_id BIGINT,customer_name TEXT,customer_phone TEXT,customer_address TEXT,gst_rate DOUBLE PRECISION NOT NULL DEFAULT 0,discount DOUBLE PRECISION NOT NULL DEFAULT 0,items_json JSONB NOT NULL DEFAULT '[]'::jsonb,subtotal DOUBLE PRECISION NOT NULL DEFAULT 0,gst_amount DOUBLE PRECISION NOT NULL DEFAULT 0,total DOUBLE PRECISION NOT NULL DEFAULT 0,status TEXT NOT NULL DEFAULT 'draft',created_at TIMESTAMPTZ DEFAULT NOW(),updated_at TIMESTAMPTZ DEFAULT NOW());CREATE TABLE IF NOT EXISTS expenses(id BIGSERIAL PRIMARY KEY,user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,expense_date DATE,category TEXT NOT NULL,amount DOUBLE PRECISION NOT NULL DEFAULT 0,note TEXT,created_at TIMESTAMPTZ DEFAULT NOW());`)}
+app.use((req,res,next)=>{res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','strict-origin-when-cross-origin');res.setHeader('X-Frame-Options','SAMEORIGIN');next()});
+app.use(express.json({limit:'1mb'}));app.use(express.static(__dirname));
+const normalizeEmail=e=>String(e||'').trim().toLowerCase();
+app.post('/api/auth/signup',async(req,res)=>{try{const{name,email,password}=req.body||{};if(!name||!email||!password)return res.status(400).json({error:'Name, email and password are required'});if(password.length<6)return res.status(400).json({error:'Password must contain at least 6 characters'});const em=normalizeEmail(email),hash=await bcrypt.hash(password,12);const u=row(await q('INSERT INTO users(name,email,password_hash) VALUES($1,$2,$3) RETURNING id,name,email',[String(name).trim(),em,hash]));await q('INSERT INTO business_profiles(user_id,business_name,email) VALUES($1,$2,$3)',[u.id,String(name).trim(),em]);res.status(201).json({user:u,token:tokenFor(u)})}catch(e){if(e.code==='23505')return res.status(409).json({error:'An account with this email already exists'});console.error(e);res.status(500).json({error:'Could not create account'})}});
+app.post('/api/auth/login',async(req,res)=>{try{const em=normalizeEmail(req.body?.email),password=req.body?.password||'',u=row(await q('SELECT * FROM users WHERE email=$1',[em]));if(!u||!(await bcrypt.compare(password,u.password_hash)))return res.status(401).json({error:'Email or password is incorrect'});const user={id:Number(u.id),name:u.name,email:u.email};res.json({user,token:tokenFor(user)})}catch(e){res.status(500).json({error:'Could not log in'})}});
+app.get('/api/me',auth,async(req,res)=>res.json({user:row(await q('SELECT id,name,email,created_at FROM users WHERE id=$1',[req.user.id]))}));
+app.get('/api/profile',auth,async(req,res)=>{const p=row(await q('SELECT business_name AS "businessName",business_type AS "businessType",phone,email,gstin,address,state,logo_url AS "logoUrl" FROM business_profiles WHERE user_id=$1',[req.user.id]))||{};res.json({profile:p})});
+app.put('/api/profile',auth,async(req,res)=>{const p=req.body||{};await q(`INSERT INTO business_profiles(user_id,business_name,business_type,phone,email,gstin,address,state,logo_url) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(user_id) DO UPDATE SET business_name=EXCLUDED.business_name,business_type=EXCLUDED.business_type,phone=EXCLUDED.phone,email=EXCLUDED.email,gstin=EXCLUDED.gstin,address=EXCLUDED.address,state=EXCLUDED.state,logo_url=EXCLUDED.logo_url`,[req.user.id,p.businessName||'',p.businessType||'',p.phone||'',p.email||'',p.gstin||'',p.address||'',p.state||'',p.logoUrl||'']);res.json({ok:true})});
+app.get('/api/customers',auth,async(req,res)=>res.json({customers:rows(await q('SELECT * FROM customers WHERE user_id=$1 ORDER BY id DESC',[req.user.id]))}));
+app.post('/api/customers',auth,async(req,res)=>{const b=req.body||{};if(!b.name)return res.status(400).json({error:'Customer name is required'});const i=row(await q('INSERT INTO customers(user_id,name,phone,email,address,notes) VALUES($1,$2,$3,$4,$5,$6) RETURNING id',[req.user.id,b.name,b.phone||'',b.email||'',b.address||'',b.notes||'']));res.status(201).json({id:Number(i.id)})});
+app.put('/api/customers/:id',auth,async(req,res)=>{const b=req.body||{},r=await q('UPDATE customers SET name=$1,phone=$2,email=$3,address=$4,notes=$5 WHERE id=$6 AND user_id=$7',[b.name,b.phone||'',b.email||'',b.address||'',b.notes||'',req.params.id,req.user.id]);if(!r.rowCount)return res.status(404).json({error:'Customer not found'});res.json({ok:true})});
+app.delete('/api/customers/:id',auth,async(req,res)=>{await q('DELETE FROM customers WHERE id=$1 AND user_id=$2',[req.params.id,req.user.id]);res.json({ok:true})});
+app.get('/api/products',auth,async(req,res)=>res.json({products:rows(await q('SELECT * FROM products WHERE user_id=$1 ORDER BY id DESC',[req.user.id]))}));
+app.post('/api/products',auth,async(req,res)=>{const b=req.body||{};if(!b.name)return res.status(400).json({error:'Product/service name is required'});const i=row(await q('INSERT INTO products(user_id,name,sku,hsn_sac,price,purchase_price,gst_rate,stock,low_stock_threshold,track_stock) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id',[req.user.id,b.name,b.sku||'',b.hsnSac||'',moneySafe(b.price),moneySafe(b.purchasePrice),moneySafe(b.gstRate)||18,moneySafe(b.stock),moneySafe(b.lowStockThreshold)||5,b.trackStock===false?false:true]));res.status(201).json({id:Number(i.id)})});
+app.put('/api/products/:id',auth,async(req,res)=>{const b=req.body||{},r=await q('UPDATE products SET name=$1,sku=$2,hsn_sac=$3,price=$4,purchase_price=$5,gst_rate=$6,stock=$7,low_stock_threshold=$8,track_stock=$9 WHERE id=$10 AND user_id=$11',[b.name,b.sku||'',b.hsnSac||'',moneySafe(b.price),moneySafe(b.purchasePrice),moneySafe(b.gstRate)||18,moneySafe(b.stock),moneySafe(b.lowStockThreshold)||5,b.trackStock===false?false:true,req.params.id,req.user.id]);if(!r.rowCount)return res.status(404).json({error:'Product not found'});res.json({ok:true})});
+app.delete('/api/products/:id',auth,async(req,res)=>{await q('DELETE FROM products WHERE id=$1 AND user_id=$2',[req.params.id,req.user.id]);res.json({ok:true})});
+app.get('/api/expenses',auth,async(req,res)=>res.json({expenses:rows(await q('SELECT * FROM expenses WHERE user_id=$1 ORDER BY id DESC',[req.user.id]))}));
+app.post('/api/expenses',auth,async(req,res)=>{const b=req.body||{};if(!b.category||!(moneySafe(b.amount)>0))return res.status(400).json({error:'Category and amount are required'});const i=row(await q('INSERT INTO expenses(user_id,expense_date,category,amount,note) VALUES($1,$2,$3,$4,$5) RETURNING id',[req.user.id,b.expenseDate||dateISO(),b.category,moneySafe(b.amount),b.note||'']));res.status(201).json({id:Number(i.id)})});
+app.delete('/api/expenses/:id',auth,async(req,res)=>{await q('DELETE FROM expenses WHERE id=$1 AND user_id=$2',[req.params.id,req.user.id]);res.json({ok:true})});
+app.get('/api/invoices',auth,async(req,res)=>res.json({invoices:rows(await q('SELECT * FROM invoices WHERE user_id=$1 ORDER BY id DESC',[req.user.id])).map(r=>({...r,items:r.items_json}))}));
+app.post('/api/invoices',auth,async(req,res)=>{const b=req.body||{},c=calcDoc(b),i=row(await q(`INSERT INTO invoices(user_id,invoice_no,invoice_date,due_date,customer_id,customer_name,customer_phone,customer_address,gst_rate,discount,items_json,subtotal,gst_amount,total,status) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,$14,$15) RETURNING id`,[req.user.id,b.invoiceNo||'INV-001',b.invoiceDate||dateISO(),b.dueDate||null,b.customerId||null,b.customerName||'',b.customerPhone||'',b.customerAddress||'',c.gstRate,c.discount,JSON.stringify(c.items),c.subtotal,c.gstAmount,c.total,b.status||'unpaid']));for(const it of c.items)if(it.productId)await q('UPDATE products SET stock=stock-$1 WHERE id=$2 AND user_id=$3 AND track_stock=TRUE',[it.qty,it.productId,req.user.id]);res.status(201).json({id:Number(i.id),total:c.total})});
+app.put('/api/invoices/:id',auth,async(req,res)=>{const b=req.body||{},c=calcDoc(b),r=await q(`UPDATE invoices SET invoice_no=$1,invoice_date=$2,due_date=$3,customer_id=$4,customer_name=$5,customer_phone=$6,customer_address=$7,gst_rate=$8,discount=$9,items_json=$10::jsonb,subtotal=$11,gst_amount=$12,total=$13,status=$14,updated_at=NOW() WHERE id=$15 AND user_id=$16`,[b.invoiceNo||'INV-001',b.invoiceDate||null,b.dueDate||null,b.customerId||null,b.customerName||'',b.customerPhone||'',b.customerAddress||'',c.gstRate,c.discount,JSON.stringify(c.items),c.subtotal,c.gstAmount,c.total,b.status||'unpaid',req.params.id,req.user.id]);if(!r.rowCount)return res.status(404).json({error:'Invoice not found'});res.json({ok:true})});
+app.patch('/api/invoices/:id/status',auth,async(req,res)=>{const allowed=['unpaid','paid','overdue','cancelled','partial'],status=allowed.includes(req.body?.status)?req.body.status:'unpaid';await q('UPDATE invoices SET status=$1,updated_at=NOW() WHERE id=$2 AND user_id=$3',[status,req.params.id,req.user.id]);res.json({ok:true})});
+app.delete('/api/invoices/:id',auth,async(req,res)=>{await q('DELETE FROM invoices WHERE id=$1 AND user_id=$2',[req.params.id,req.user.id]);res.json({ok:true})});
+app.get('/api/quotations',auth,async(req,res)=>res.json({quotations:rows(await q('SELECT * FROM quotations WHERE user_id=$1 ORDER BY id DESC',[req.user.id])).map(r=>({...r,items:r.items_json}))}));
+app.post('/api/quotations',auth,async(req,res)=>{const b=req.body||{},c=calcDoc(b),i=row(await q(`INSERT INTO quotations(user_id,quote_no,quote_date,valid_until,customer_id,customer_name,customer_phone,customer_address,gst_rate,discount,items_json,subtotal,gst_amount,total,status) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,$14,$15) RETURNING id`,[req.user.id,b.quoteNo||'QUO-001',b.quoteDate||dateISO(),b.validUntil||null,b.customerId||null,b.customerName||'',b.customerPhone||'',b.customerAddress||'',c.gstRate,c.discount,JSON.stringify(c.items),c.subtotal,c.gstAmount,c.total,b.status||'draft']));res.status(201).json({id:Number(i.id),total:c.total})});
+app.put('/api/quotations/:id',auth,async(req,res)=>{const b=req.body||{},c=calcDoc(b),r=await q(`UPDATE quotations SET quote_no=$1,quote_date=$2,valid_until=$3,customer_id=$4,customer_name=$5,customer_phone=$6,customer_address=$7,gst_rate=$8,discount=$9,items_json=$10::jsonb,subtotal=$11,gst_amount=$12,total=$13,status=$14,updated_at=NOW() WHERE id=$15 AND user_id=$16`,[b.quoteNo||'QUO-001',b.quoteDate||null,b.validUntil||null,b.customerId||null,b.customerName||'',b.customerPhone||'',b.customerAddress||'',c.gstRate,c.discount,JSON.stringify(c.items),c.subtotal,c.gstAmount,c.total,b.status||'draft',req.params.id,req.user.id]);if(!r.rowCount)return res.status(404).json({error:'Quotation not found'});res.json({ok:true})});
+app.delete('/api/quotations/:id',auth,async(req,res)=>{await q('DELETE FROM quotations WHERE id=$1 AND user_id=$2',[req.params.id,req.user.id]);res.json({ok:true})});
+app.get('/api/dashboard',auth,async(req,res)=>{const invoices=rows(await q('SELECT status,total FROM invoices WHERE user_id=$1',[req.user.id])),expenses=rows(await q('SELECT amount FROM expenses WHERE user_id=$1',[req.user.id])),products=rows(await q('SELECT stock,low_stock_threshold,track_stock FROM products WHERE user_id=$1',[req.user.id])),customers=Number(row(await q('SELECT COUNT(*)::int AS c FROM customers WHERE user_id=$1',[req.user.id])).c),revenue=invoices.filter(x=>x.status==='paid').reduce((a,x)=>a+moneySafe(x.total),0),outstanding=invoices.filter(x=>['unpaid','overdue','partial'].includes(x.status)).reduce((a,x)=>a+moneySafe(x.total),0),totalExpenses=expenses.reduce((a,x)=>a+moneySafe(x.amount),0),lowStock=products.filter(x=>x.track_stock&&moneySafe(x.stock)<=moneySafe(x.low_stock_threshold)).length;res.json({customers,products:products.length,invoices:invoices.length,revenue,outstanding,totalExpenses,profitEstimate:revenue-totalExpenses,lowStock})});
+app.get('/api/reports/monthly',auth,async(req,res)=>{const invoices=rows(await q(`SELECT to_char(invoice_date,'YYYY-MM') AS month,status,total FROM invoices WHERE user_id=$1 ORDER BY month DESC`,[req.user.id])),expenses=rows(await q(`SELECT to_char(expense_date,'YYYY-MM') AS month,SUM(amount) AS total FROM expenses WHERE user_id=$1 GROUP BY month ORDER BY month DESC`,[req.user.id]));res.json({invoices,expenses})});
+app.get('/api/health',async(req,res)=>{try{await q('SELECT 1');res.json({ok:true,service:'BizKit',version:'0.4.0',database:'postgresql'})}catch(e){res.status(503).json({ok:false,error:'Database unavailable'})}});
+app.get('/{*splat}',(req,res)=>res.sendFile(path.join(__dirname,'index.html')));
+initDb().then(()=>app.listen(PORT,()=>console.log(`BizKit PostgreSQL running on port ${PORT}`))).catch(e=>{console.error('Database initialization failed:',e);process.exit(1)});

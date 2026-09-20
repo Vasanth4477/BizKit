@@ -1,4 +1,4 @@
-# BizKit India 0.6.1
+# BizKit India 0.7.0
 
 A multi-page, PostgreSQL-backed small-business workspace for Indian businesses.
 
@@ -12,10 +12,10 @@ The public site and business workspace use dedicated HTML documents per route, w
 - Customers and customer ledgers
 - Products, stock and stock movement history
 - Suppliers
-- Purchases API that increments stock
+- Purchases API that increments stock with transactional safeguards
 - Invoices with status tracking
-- Quotations
-- Payments and invoice status synchronization
+- Quotations with invoice conversion
+- Payments and invoice status synchronization with balance validation
 - Expenses
 - Dashboard and six-month sales/expense report
 - Global search across customers/products/invoices
@@ -23,6 +23,7 @@ The public site and business workspace use dedicated HTML documents per route, w
 - Integration status page
 - GST, margin, break-even and salary tools
 - Mobile navigation and responsive UI
+- Transaction-safe stock edits, invoice edits and invoice deletion guards
 - Render Docker deployment
 
 ## External APIs

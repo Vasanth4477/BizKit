@@ -2,7 +2,7 @@ const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
 const token=()=>localStorage.getItem('bizkit_token')||''; const user=()=>JSON.parse(localStorage.getItem('bizkit_user')||'null');
 const money=v=>'₹'+Math.round(Number(v)||0).toLocaleString('en-IN');
 function headers(){return {'Content-Type':'application/json',...(token()?{'Authorization':'Bearer '+token()}:{})}}
-async function api(url,opt={}){const r=await fetch(url,{...opt,headers:{...headers(),...(opt.headers||{})}});let d={};try{d=await r.json()}catch{}if(!r.ok)throw new Error(d.error||'Request failed');return d}
+async function api(url,opt={}){try{const r=await fetch(url,{...opt,headers:{...headers(),...(opt.headers||{})}});let d={};try{d=await r.json()}catch{}if(!r.ok)throw new Error(d.error||'Request failed');return d}catch(err){if(err?.message==='Failed to fetch')toast('Network error. Please check your connection.');else toast(err.message||'Something went wrong');throw err}}
 function toast(msg){const t=$('#toast');if(!t)return;t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2600)}
 function escapeHtml(s){return String(s??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#039;','"':'&quot;'}[c]))}
 function logout(){localStorage.removeItem('bizkit_token');localStorage.removeItem('bizkit_user');location.href='/login'}

@@ -1,4 +1,4 @@
-const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
+const $=s=>document.querySelector(s), $=s=>[...document.querySelectorAll(s)]; function todayISO(){const d=new Date();return [d.getFullYear(),String(d.getMonth()+1).padStart(2,'0'),String(d.getDate()).padStart(2,'0')].join('-')}
 const token=()=>localStorage.getItem('bizkit_token')||''; const user=()=>JSON.parse(localStorage.getItem('bizkit_user')||'null');
 const money=v=>'₹'+Math.round(Number(v)||0).toLocaleString('en-IN');
 function headers(){return {'Content-Type':'application/json',...(token()?{'Authorization':'Bearer '+token()}:{})}}

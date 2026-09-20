@@ -1,24 +1,28 @@
 # BizKit launch checklist
 
-Completed in this build:
-- Mobile-first landing page
-- Outcome-led hero and clearer positioning
-- Categorized tool discovery and connected workspace
-- GST, margin, break-even, salary and P&L tools
-- Business name generator
-- Invoice + quotation workflows
-- Save/history/status flows backed by the API
-- Customer and product management
-- Dashboard snapshot
-- WhatsApp share actions for invoices and quotations
-- Pricing section / Free -> Pro -> Business framing
-- SEO metadata and guide content
-- Production Docker deployment setup
+Completed in Phase 1–3:
+- Mature responsive product design and dedicated multipage routing
+- India-first INR, GSTIN and HSN/SAC business data model
+- JWT authentication with PostgreSQL persistence
+- Customer and supplier management with delete guards
+- Product catalogue, stock tracking and stock movement history
+- Transaction-safe invoice creation, editing, payment status and inventory reconciliation
+- Invoice cancellation with inventory reversal and cancellation safeguards
+- Quotation creation, lifecycle controls and conversion to invoice
+- Purchase receipt, editing, stock reconciliation and cancellation
+- Payment ledger with balance validation and auditable payment reversal
+- Expense create/edit/delete workflow
+- Dashboard, reports, activity and global search
+- Razorpay Payment Link adapter
+- Mobile navigation and responsive workspace UI
+- Production Docker configuration for Render
 
 Before paid public launch:
 - Add password reset and email verification
-- Add rate limiting / abuse protection
-- Add Privacy Policy / Terms / Refund pages
-- Add analytics and error monitoring
-- Add a payment provider and subscription entitlements
-- Move from SQLite to a managed database as usage grows
+- Add rate limiting and abuse protection
+- Add Privacy Policy, Terms and Refund pages
+- Add analytics and application error monitoring
+- Add a payment provider webhook/reconciliation flow for automated payment updates
+- Add subscription entitlements when paid plans go live
+- Run browser-level and API integration tests against a dedicated staging PostgreSQL database
+- Add automated CI checks for syntax, smoke tests and migration safety

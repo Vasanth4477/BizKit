@@ -1,6 +1,6 @@
 # BizKit launch checklist
 
-Completed in Phase 1–3:
+Completed in Phase 1–3 + production QA hardening:
 - Mature responsive product design and dedicated multipage routing
 - India-first INR, GSTIN and HSN/SAC business data model
 - JWT authentication with PostgreSQL persistence

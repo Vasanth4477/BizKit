@@ -42,7 +42,7 @@ for(const x of [
 ]) if(!router.includes(x)) throw Error('Missing workflow UI: '+x);
 
 if((router.match(/function initInvoiceBuilder\(/g)||[]).length!==1) throw Error('Expected exactly one invoice builder initializer');
-if((app.match(/function qsa\(/g)||[]).length!==1) throw Error('Expected exactly one qsa helper');
+if((app.match(/\bqsa\s*=\s*s=>/g)||[]).length!==1) throw Error('Expected exactly one qsa helper');
 if((app.match(/\$\$/g)||[]).length) throw Error('Broken $$ helper remains');
 if((router.match(/new Date\(\)\.toISOString\(\)\.slice\(0,10\)/g)||[]).length) throw Error('UTC date defaults remain');
 

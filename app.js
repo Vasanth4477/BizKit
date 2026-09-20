@@ -39,3 +39,34 @@ async function submitPayment(){await api('/api/payments',{method:'POST',body:JSO
 async function createPaymentLink(){const d=await api('/api/integrations/razorpay/payment-link',{method:'POST',body:JSON.stringify({amount:n($('#pl_amount').value),customerName:$('#pl_name').value,customerPhone:$('#pl_phone').value,customerEmail:$('#pl_email').value,referenceId:$('#pl_ref').value,description:$('#pl_desc').value})});$('#linkResult').innerHTML=`<div class="success">Payment link created: <a href="${d.short_url}" target="_blank"><b>${d.short_url}</b></a></div>`}
 function openPrint(){window.print()}
 window.Biz={api,toast,logout,requireAuth,initShell,wireAuth,dashboard,listCustomers,customerDetail,listProducts,productDetail,listInvoices,invoiceDetail,listPayments,listExpenses,listPurchases,listSuppliers,reports,settings,integrations,toolInit,saveProfile,submitCustomer,submitProduct,submitExpense,submitPayment,createPaymentLink,openPrint};
+
+/* Phase 3 workflow UX */
+function installWorkflowUx(){
+  const wrap=(name,check)=>{
+    if(!window.Biz?.[name]||window.Biz['__wrapped_'+name])return;
+    const original=window.Biz[name];
+    window.Biz['__wrapped_'+name]=true;
+    window.Biz[name]=async function(){if(!check())return;return original.apply(this,arguments)}
+  };
+  wrap('submitCustomer',()=>{const n=$('#c_name')?.value.trim();if(!n){toast('Customer name is required');$('#c_name')?.focus();return false}return true});
+  wrap('submitProduct',()=>{const n=$('#p_name')?.value.trim(),price=n($('#p_price')?.value),gst=n($('#p_gst')?.value);if(!n){toast('Product name is required');$('#p_name')?.focus();return false}if(price<0||gst<0||gst>100){toast('Check product price and GST rate');return false}return true});
+  wrap('submitExpense',()=>{const amount=n($('#e_amount')?.value);if(amount<=0){toast('Enter an expense amount greater than zero');$('#e_amount')?.focus();return false}return true});
+  wrap('submitPayment',()=>{const amount=n($('#pay_amount')?.value),invoice=$('#pay_invoice')?.value.trim(),customer=$('#pay_customer')?.value.trim();if(amount<=0){toast('Enter a payment amount greater than zero');$('#pay_amount')?.focus();return false}if(!invoice&&!customer){toast('Add an invoice ID or customer ID');return false}return true});
+  const wrapGlobal=(name,check)=>{
+    if(typeof window[name]!=='function'||window['__wrapped_'+name])return;
+    const original=window[name];window['__wrapped_'+name]=true;
+    window[name]=function(){if(!check())return;return original.apply(this,arguments)}
+  };
+  wrapGlobal('saveNewInvoice',()=>{const no=$('#inv_no')?.value.trim(),customer=$('#inv_customer')?.value.trim();if(!no||!customer){toast('Invoice number and customer name are required');return false}if(!invItems?.length){toast('Add at least one item');return false}return true});
+  wrapGlobal('saveNewQuote',()=>{if(!$('#q_no')?.value.trim()||!$('#q_customer')?.value.trim()){toast('Quotation number and customer name are required');return false}if(!quoteItems?.length){toast('Add at least one item');return false}return true});
+  wrapGlobal('savePurchase',()=>{if(!$('#pu_no')?.value.trim()||!$('#pu_supplier')?.value.trim()){toast('Purchase number and supplier are required');return false}if(!purchaseItems?.length){toast('Add at least one item');return false}return true});
+  const bind=()=>{
+    const inv=()=>{if(typeof updateInvoiceSummary==='function')updateInvoiceSummary()};
+    ['inv_discount','inv_gst','inv_amount'].forEach(id=>$('#'+id)?.addEventListener('input',inv));
+    $('#inv_item')?.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();addInvItem()}});
+    $('#q_item')?.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();addQuoteItem()}});
+    $('#pu_item')?.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();addPurchaseItem()}});
+  };
+  bind();
+}
+setTimeout(installWorkflowUx,0);

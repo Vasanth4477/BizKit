@@ -2,6 +2,8 @@
 
 A multi-page, PostgreSQL-backed small-business workspace for Indian businesses.
 
+The public site and business workspace use dedicated HTML documents per route, with shared JavaScript rendering and a shared Express/PostgreSQL backend.
+
 ## What is actually included
 - Separate public marketing pages: home, features, pricing, resources
 - Separate app routes/pages: dashboard, invoices, invoice detail/new, quotations, customers, customer detail, products, product detail, purchases, payments, expenses, reports, tools, settings, integrations

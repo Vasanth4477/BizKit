@@ -41,7 +41,7 @@ app.use((req,res,next)=>{res.setHeader('X-Content-Type-Options','nosniff');res.s
 app.use(express.json({limit:'1mb'}));
 // Deployment-safe asset root: works whether GitHub preserves /public or flattens files into repository root.
 const ASSET_ROOT = require('fs').existsSync(path.join(__dirname,'public','app.html')) ? path.join(__dirname,'public') : __dirname;
-app.use(express.static(ASSET_ROOT));
+app.use(express.static(ASSET_ROOT,{index:false}));
 
 // Auth
 app.post('/api/auth/signup',async(req,res)=>{try{const{name,email,password}=req.body||{};if(!name||!email||!password)return res.status(400).json({error:'Name, email and password are required'});if(password.length<6)return res.status(400).json({error:'Password must contain at least 6 characters'});const em=normalizeEmail(email),hash=await bcrypt.hash(password,12),u=row(await q('INSERT INTO users(name,email,password_hash) VALUES($1,$2,$3) RETURNING id,name,email',[String(name).trim(),em,hash]));await q('INSERT INTO business_profiles(user_id,business_name,email) VALUES($1,$2,$3)',[u.id,String(name).trim(),em]);await q('INSERT INTO integration_settings(user_id) VALUES($1) ON CONFLICT DO NOTHING',[u.id]);res.status(201).json({user:u,token:tokenFor(u)})}catch(e){if(e.code==='23505')return res.status(409).json({error:'An account with this email already exists'});console.error(e);res.status(500).json({error:'Could not create account'})}});
@@ -112,8 +112,7 @@ app.get('/api/integrations/status',auth,async(req,res)=>res.json({razorpay:Boole
 app.get('/api/health',async(req,res)=>{try{await q('SELECT 1');res.json({ok:true,service:'BizKit',version:'0.6.1',database:'postgresql',features:['dashboard','invoices','quotations','customers','products','inventory','suppliers','purchases','payments','expenses','reports','search','razorpay-adapter']})}catch(e){res.status(503).json({ok:false,error:'Database unavailable'})}});
 
 // Page routes
-for(const p of ['','/','/features','/pricing','/resources','/login','/signup','/app','/app/invoices','/app/invoices/new','/app/quotations','/app/customers','/app/products','/app/purchases','/app/payments','/app/expenses','/app/reports','/app/tools','/app/settings','/app/integrations']){
-  app.get(p,(req,res)=>res.sendFile(path.join(ASSET_ROOT,'app.html')))
-}
+const PAGE_FILES={'/':'home.html','/features':'features.html','/pricing':'pricing.html','/resources':'resources.html','/login':'login.html','/signup':'signup.html','/app':'dashboard.html','/app/invoices':'invoices.html','/app/invoices/new':'invoice-new.html','/app/quotations':'quotations.html','/app/customers':'customers.html','/app/products':'products.html','/app/purchases':'purchases.html','/app/payments':'payments.html','/app/expenses':'expenses.html','/app/reports':'reports.html','/app/tools':'tools.html','/app/settings':'settings.html','/app/integrations':'integrations.html'};
+for(const [route,file] of Object.entries(PAGE_FILES)) app.get(route,(req,res)=>res.sendFile(path.join(ASSET_ROOT,'pages',file)));
 app.use((req,res)=>res.status(404).sendFile(path.join(ASSET_ROOT,'404.html')));
 initDb().then(()=>app.listen(PORT,()=>console.log(`BizKit 0.6.1 running on port ${PORT}`))).catch(e=>{console.error('Database initialization failed:',e);process.exit(1)});

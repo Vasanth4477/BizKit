@@ -2,7 +2,7 @@ services:
   - type: web
     name: bizkit-india
     runtime: docker
-    plan: starter
+    plan: free
     dockerfilePath: ./Dockerfile
     healthCheckPath: /api/health
     envVars:

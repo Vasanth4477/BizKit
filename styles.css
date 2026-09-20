@@ -102,7 +102,7 @@ button,input,select,textarea{font:inherit}button{cursor:pointer}a{color:inherit;
   .mobileNav a{text-align:center;padding:9px 4px;font-size:10px;color:var(--muted);font-weight:800}.mobileNav a.active{color:var(--brand)}
   body{padding-bottom:58px}.invoicePaper{padding:18px}.paperHead{flex-direction:column}.paperMeta{text-align:left}
 }
-@media(print){body *{visibility:hidden}.printArea,.printArea *{visibility:visible}.printArea{position:absolute;inset:0}}
+@media(print){body.printing *{visibility:hidden!important}body.printing .printInclude,body.printing .printInclude *{visibility:visible!important}body.printing .printInclude{position:absolute;inset:0;padding:20px;background:#fff}body.printing .printInclude .actions{display:none!important}body.printing .printInclude .card{box-shadow:none!important}}
 
 
 /* UI v2 product layer */

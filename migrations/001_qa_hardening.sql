@@ -77,6 +77,7 @@ CREATE INDEX IF NOT EXISTS idx_invoices_user_status_due ON public.invoices(user_
 CREATE INDEX IF NOT EXISTS idx_payments_invoice_active ON public.payments(invoice_id,user_id,reversed_at);
 CREATE INDEX IF NOT EXISTS idx_purchases_supplier_user ON public.purchases(supplier_id,user_id);
 CREATE INDEX IF NOT EXISTS idx_quotations_user_valid_until ON public.quotations(user_id,valid_until);
+CREATE INDEX IF NOT EXISTS idx_quotations_customer_user_id ON public.quotations(customer_id,user_id);
 DROP INDEX IF EXISTS public.idx_invoices_user_invoice_no;
 DROP INDEX IF EXISTS public.idx_quotations_user_quote_no;
 DROP INDEX IF EXISTS public.idx_purchases_user_purchase_no;

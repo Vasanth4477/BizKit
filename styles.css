@@ -169,3 +169,26 @@ button,input,select,textarea{font:inherit}button{cursor:pointer}a{color:inherit;
 .workflow b,.workflow span{display:block}
 .workflow span{margin-top:3px}
 @media(max-width:900px){.invoiceBuilder{grid-template-columns:1fr}.invoiceSummary{position:static}.dataToolbar{align-items:flex-start;gap:10px}}
+
+/* Phase 2 final product polish */
+.pageTitle{align-items:flex-end}
+.pageTitle .actions{flex-wrap:wrap}
+.compactStats{grid-template-columns:repeat(3,minmax(0,1fr));margin-bottom:16px}
+.toolIntro{display:flex;justify-content:space-between;gap:28px;align-items:flex-end;margin-bottom:18px;padding-bottom:18px;border-bottom:1px solid var(--line)}
+.toolIntro h2{margin:8px 0 4px;font-size:24px}
+.toolIntro p{margin:0;color:var(--muted);font-size:12px}
+.toolNote{max-width:330px;padding:11px 13px;border:1px solid var(--line);border-radius:8px;background:#fbfcfe;color:var(--muted);font-size:11px;line-height:1.55}
+.toolCard{min-height:270px}
+.settingsTabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin-bottom:18px}
+.settingsTabs span{padding:10px 14px;color:var(--muted);font-size:12px;font-weight:700}
+.settingsTabs .active{color:var(--brand);border-bottom:2px solid var(--brand)}
+.integrationIntro{padding:16px 18px;border:1px solid var(--line);border-radius:10px;background:#fff;margin-bottom:18px}
+.integrationIntro strong{display:block;margin-top:8px;font-size:14px}
+.integrationIntro p{margin:5px 0 0;color:var(--muted);font-size:12px}
+.reportPanel{padding:18px}
+@media(max-width:760px){
+ .compactStats{grid-template-columns:1fr}
+ .toolIntro{display:block}
+ .toolNote{max-width:none;margin-top:14px}
+ .settingsTabs{overflow:auto}
+}

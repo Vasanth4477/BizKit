@@ -49,7 +49,7 @@ function installWorkflowUx(){
     window.Biz[name]=async function(){if(!check())return;return original.apply(this,arguments)}
   };
   wrap('submitCustomer',()=>{const n=$('#c_name')?.value.trim();if(!n){toast('Customer name is required');$('#c_name')?.focus();return false}return true});
-  wrap('submitProduct',()=>{const n=$('#p_name')?.value.trim(),price=n($('#p_price')?.value),gst=n($('#p_gst')?.value);if(!n){toast('Product name is required');$('#p_name')?.focus();return false}if(price<0||gst<0||gst>100){toast('Check product price and GST rate');return false}return true});
+  wrap('submitProduct',()=>{const name=$('#p_name')?.value.trim(),price=Number($('#p_price')?.value)||0,gst=Number($('#p_gst')?.value)||0;if(!name){toast('Product name is required');$('#p_name')?.focus();return false}if(price<0||gst<0||gst>100){toast('Check product price and GST rate');return false}return true});
   wrap('submitExpense',()=>{const amount=n($('#e_amount')?.value);if(amount<=0){toast('Enter an expense amount greater than zero');$('#e_amount')?.focus();return false}return true});
   wrap('submitPayment',()=>{const amount=n($('#pay_amount')?.value),invoice=$('#pay_invoice')?.value.trim(),customer=$('#pay_customer')?.value.trim();if(amount<=0){toast('Enter a payment amount greater than zero');$('#pay_amount')?.focus();return false}if(!invoice&&!customer){toast('Add an invoice ID or customer ID');return false}return true});
   const wrapGlobal=(name,check)=>{

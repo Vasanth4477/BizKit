@@ -53,3 +53,30 @@ ALTER TABLE public.purchases DROP CONSTRAINT IF EXISTS purchases_status_valid;
 ALTER TABLE public.purchases ADD CONSTRAINT purchases_status_valid CHECK (status IN ('received','cancelled'));
 
 REVOKE EXECUTE ON FUNCTION public.rls_auto_enable() FROM PUBLIC, anon, authenticated;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_customers_id_user ON public.customers(id,user_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_invoices_id_user ON public.invoices(id,user_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_quotations_id_user ON public.quotations(id,user_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_suppliers_id_user ON public.suppliers(id,user_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_products_id_user ON public.products(id,user_id);
+
+ALTER TABLE public.invoices DROP CONSTRAINT IF EXISTS invoices_customer_user_fkey;
+ALTER TABLE public.invoices ADD CONSTRAINT invoices_customer_user_fkey FOREIGN KEY (customer_id,user_id) REFERENCES public.customers(id,user_id);
+ALTER TABLE public.quotations DROP CONSTRAINT IF EXISTS quotations_customer_user_fkey;
+ALTER TABLE public.quotations ADD CONSTRAINT quotations_customer_user_fkey FOREIGN KEY (customer_id,user_id) REFERENCES public.customers(id,user_id);
+ALTER TABLE public.purchases DROP CONSTRAINT IF EXISTS purchases_supplier_user_fkey;
+ALTER TABLE public.purchases ADD CONSTRAINT purchases_supplier_user_fkey FOREIGN KEY (supplier_id,user_id) REFERENCES public.suppliers(id,user_id);
+ALTER TABLE public.payments DROP CONSTRAINT IF EXISTS payments_invoice_user_fkey;
+ALTER TABLE public.payments ADD CONSTRAINT payments_invoice_user_fkey FOREIGN KEY (invoice_id,user_id) REFERENCES public.invoices(id,user_id);
+ALTER TABLE public.payments DROP CONSTRAINT IF EXISTS payments_customer_user_fkey;
+ALTER TABLE public.payments ADD CONSTRAINT payments_customer_user_fkey FOREIGN KEY (customer_id,user_id) REFERENCES public.customers(id,user_id);
+ALTER TABLE public.stock_movements DROP CONSTRAINT IF EXISTS stock_movements_product_user_fkey;
+ALTER TABLE public.stock_movements ADD CONSTRAINT stock_movements_product_user_fkey FOREIGN KEY (product_id,user_id) REFERENCES public.products(id,user_id);
+
+CREATE INDEX IF NOT EXISTS idx_invoices_user_status_due ON public.invoices(user_id,status,due_date);
+CREATE INDEX IF NOT EXISTS idx_payments_invoice_active ON public.payments(invoice_id,user_id,reversed_at);
+CREATE INDEX IF NOT EXISTS idx_purchases_supplier_user ON public.purchases(supplier_id,user_id);
+CREATE INDEX IF NOT EXISTS idx_quotations_user_valid_until ON public.quotations(user_id,valid_until);
+DROP INDEX IF EXISTS public.idx_invoices_user_invoice_no;
+DROP INDEX IF EXISTS public.idx_quotations_user_quote_no;
+DROP INDEX IF EXISTS public.idx_purchases_user_purchase_no;

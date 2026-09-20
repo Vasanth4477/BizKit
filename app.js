@@ -61,7 +61,7 @@ function installWorkflowUx(){
   wrapGlobal('saveNewQuote',()=>{if(!$('#q_no')?.value.trim()||!$('#q_customer')?.value.trim()){toast('Quotation number and customer name are required');return false}if(!quoteItems?.length){toast('Add at least one item');return false}return true});
   wrapGlobal('savePurchase',()=>{if(!$('#pu_no')?.value.trim()||!$('#pu_supplier')?.value.trim()){toast('Purchase number and supplier are required');return false}if(!purchaseItems?.length){toast('Add at least one item');return false}return true});
   const bind=()=>{
-    const inv=()=>{if(typeof updateInvoiceSummary==='function')updateInvoiceSummary()};
+    const inv=()=>{updateInvoiceSummary()};
     ['inv_discount','inv_gst','inv_amount'].forEach(id=>$('#'+id)?.addEventListener('input',inv));
     $('#inv_item')?.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();addInvItem()}});
     $('#q_item')?.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();addQuoteItem()}});
@@ -71,6 +71,7 @@ function installWorkflowUx(){
 }
 setTimeout(installWorkflowUx,0);
 
+function updateInvoiceSummary(){const subtotal=(typeof invItems!=='undefined'?invItems:[]).reduce((a,x)=>a+Number(x.qty||1)*Number(x.rate||0),0),discount=Math.max(0,Number($('#inv_discount')?.value)||0),gstRate=Math.max(0,Number($('#inv_gst')?.value)||0),taxable=Math.max(0,subtotal-discount),gst=taxable*gstRate/100,total=taxable+gst;const count=$('#invItemCount'),sub=$('#invSubtotal'),tax=$('#invTax'),tot=$('.summaryTotal strong');if(count)count.textContent=String((typeof invItems!=='undefined'?invItems:[]).length);if(sub)sub.textContent=money(subtotal);if(tax)tax.textContent=money(gst);if(tot)tot.textContent=money(total)}
 function installCoreWorkflowEnhancements(){
   const setTotal=(id,items)=>{const total=(items||[]).reduce((sum,x)=>sum+Number(x.qty||1)*Number(x.rate||0),0);const el=$('#'+id);if(el)el.textContent=money(total)};
   const wrapGlobal=(name,after)=>{
@@ -78,10 +79,12 @@ function installCoreWorkflowEnhancements(){
     const original=window[name];window['__enh_'+name]=true;
     window[name]=function(){const result=original.apply(this,arguments);setTimeout(after,0);return result}
   };
-  wrapGlobal('addQuoteItem',()=>setTotal('qSubtotal',window.quoteItems));
-  wrapGlobal('addPurchaseItem',()=>setTotal('puSubtotal',window.purchaseItems));
-  wrapGlobal('renderQuoteItems',()=>setTotal('qSubtotal',window.quoteItems));
-  wrapGlobal('renderPurchaseItems',()=>setTotal('puSubtotal',window.purchaseItems));
+  wrapGlobal('addInvItem',()=>updateInvoiceSummary());
+  wrapGlobal('renderInvItems',()=>updateInvoiceSummary());
+  wrapGlobal('addQuoteItem',()=>setTotal('qSubtotal',typeof quoteItems!=='undefined'?quoteItems:[]));
+  wrapGlobal('addPurchaseItem',()=>setTotal('puSubtotal',typeof purchaseItems!=='undefined'?purchaseItems:[]));
+  wrapGlobal('renderQuoteItems',()=>setTotal('qSubtotal',typeof quoteItems!=='undefined'?quoteItems:[]));
+  wrapGlobal('renderPurchaseItems',()=>setTotal('puSubtotal',typeof purchaseItems!=='undefined'?purchaseItems:[]));
   if(typeof window.adjustStock==='function'&&!window.__enh_adjustStock){
     const original=window.adjustStock;window.__enh_adjustStock=true;
     window.adjustStock=async function(id,type){const q=prompt('Quantity to '+(type==='in'?'add':'remove')+':');const qty=Number(q);if(!Number.isFinite(qty)||qty<=0){toast('Enter a quantity greater than zero');return}return api('/api/products/'+id+'/adjust-stock',{method:'POST',body:JSON.stringify({quantity:qty,type,note:'Manual adjustment'})}).then(()=>{toast('Stock updated');return listProducts()}).catch(()=>{})}

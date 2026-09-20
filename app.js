@@ -70,3 +70,21 @@ function installWorkflowUx(){
   bind();
 }
 setTimeout(installWorkflowUx,0);
+
+function installCoreWorkflowEnhancements(){
+  const setTotal=(id,items)=>{const total=(items||[]).reduce((sum,x)=>sum+Number(x.qty||1)*Number(x.rate||0),0);const el=$('#'+id);if(el)el.textContent=money(total)};
+  const wrapGlobal=(name,after)=>{
+    if(typeof window[name]!=='function'||window['__enh_'+name])return;
+    const original=window[name];window['__enh_'+name]=true;
+    window[name]=function(){const result=original.apply(this,arguments);setTimeout(after,0);return result}
+  };
+  wrapGlobal('addQuoteItem',()=>setTotal('qSubtotal',window.quoteItems));
+  wrapGlobal('addPurchaseItem',()=>setTotal('puSubtotal',window.purchaseItems));
+  wrapGlobal('renderQuoteItems',()=>setTotal('qSubtotal',window.quoteItems));
+  wrapGlobal('renderPurchaseItems',()=>setTotal('puSubtotal',window.purchaseItems));
+  if(typeof window.adjustStock==='function'&&!window.__enh_adjustStock){
+    const original=window.adjustStock;window.__enh_adjustStock=true;
+    window.adjustStock=async function(id,type){const q=prompt('Quantity to '+(type==='in'?'add':'remove')+':');const qty=Number(q);if(!Number.isFinite(qty)||qty<=0){toast('Enter a quantity greater than zero');return}return api('/api/products/'+id+'/adjust-stock',{method:'POST',body:JSON.stringify({quantity:qty,type,note:'Manual adjustment'})}).then(()=>{toast('Stock updated');return listProducts()}).catch(()=>{})}
+  }
+}
+setTimeout(installCoreWorkflowEnhancements,0);

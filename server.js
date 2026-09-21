@@ -8,6 +8,7 @@ const {rateLimit}=require('express-rate-limit');
 const nodemailer=require('nodemailer');
 const app=express();
 app.disable('x-powered-by');
+app.set('trust proxy',1);
 const PORT=process.env.PORT||3000;
 const JWT_SECRET=process.env.JWT_SECRET;
 const DATABASE_URL=process.env.DATABASE_URL;
@@ -56,7 +57,12 @@ ALTER TABLE payments ADD COLUMN IF NOT EXISTS reversal_note TEXT;
 async function logActivity(userId,type,title,meta={}){try{await q('INSERT INTO activity(user_id,type,title,meta) VALUES($1,$2,$3,$4)',[userId,type,title,JSON.stringify(meta)])}catch{}}
 async function withTransaction(work){const client=await pool.connect();try{await client.query('BEGIN');const result=await work(client);await client.query('COMMIT');return result}catch(e){await client.query('ROLLBACK');throw e}finally{client.release()}}
 
-app.use((req,res,next)=>{res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','strict-origin-when-cross-origin');res.setHeader('X-Frame-Options','SAMEORIGIN');res.setHeader('Permissions-Policy','camera=(), microphone=(), geolocation=()');if(process.env.NODE_ENV==='production')res.setHeader('Strict-Transport-Security','max-age=31536000; includeSubDomains');next()});
+app.use((req,res,next)=>{
+  const requestId=crypto.randomUUID();
+  req.requestId=requestId;
+  res.setHeader('X-Request-Id',requestId);
+  if(req.path.startsWith('/api/'))res.setHeader('Cache-Control','no-store');
+  res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','strict-origin-when-cross-origin');res.setHeader('X-Frame-Options','SAMEORIGIN');res.setHeader('Permissions-Policy','camera=(), microphone=(), geolocation=()');if(process.env.NODE_ENV==='production')res.setHeader('Strict-Transport-Security','max-age=31536000; includeSubDomains');next()});
 app.use(express.json({limit:'1mb'}));
 app.param('id',(req,res,next,id)=>/^[1-9]\d*$/.test(String(id))?next():res.status(400).json({error:'ID must be a positive integer'}));
 const authLimiter=rateLimit({windowMs:15*60*1000,limit:10,standardHeaders:'draft-8',legacyHeaders:false,message:{error:'Too many authentication attempts. Please try again later.'}}); const resetLimiter=rateLimit({windowMs:15*60*1000,limit:5,standardHeaders:'draft-8',legacyHeaders:false,message:{error:'Too many password reset attempts. Please try again later.'}}); const apiLimiter=rateLimit({windowMs:15*60*1000,limit:600,standardHeaders:'draft-8',legacyHeaders:false,skip:req=>req.path==='/health'});
@@ -202,4 +208,21 @@ app.get('/api/health',async(req,res)=>{try{await q('SELECT 1');const expected=['
 const PAGE_FILES={'/':'home.html','/features':'features.html','/pricing':'pricing.html','/resources':'resources.html','/privacy':'privacy.html','/terms':'terms.html','/refund':'refund.html','/login':'login.html','/signup':'signup.html','/forgot-password':'forgot-password.html','/reset-password':'reset-password.html','/app':'dashboard.html','/app/invoices':'invoices.html','/app/invoices/new':'invoice-new.html','/app/quotations':'quotations.html','/app/customers':'customers.html','/app/products':'products.html','/app/purchases':'purchases.html','/app/payments':'payments.html','/app/expenses':'expenses.html','/app/reports':'reports.html','/app/tools':'tools.html','/app/settings':'settings.html','/app/integrations':'integrations.html'};
 for(const [route,file] of Object.entries(PAGE_FILES)) app.get(route,(req,res)=>res.sendFile(path.join(ASSET_ROOT,'pages',file)));
 app.use((req,res)=>res.status(404).sendFile(path.join(ASSET_ROOT,'404.html')));
-initDb().then(()=>app.listen(PORT,()=>console.log(`BizKit 0.8.0 running on port ${PORT}`))).catch(e=>{console.error('Database initialization failed:',e);process.exit(1)});
+app.use((err,req,res,next)=>{
+  const status=Number.isInteger(err?.status)&&err.status>=400&&err.status<600?err.status:500;
+  console.error(JSON.stringify({requestId:req.requestId,method:req.method,path:req.originalUrl,status,error:err?.message||String(err)}));
+  if(res.headersSent)return next(err);
+  res.status(status).json({error:status===500?'Internal server error':(err?.message||'Request failed'),requestId:req.requestId});
+});
+let server;
+let shuttingDown=false;
+async function shutdown(signal){
+  if(shuttingDown)return;
+  shuttingDown=true;
+  console.log('BizKit shutting down:',signal);
+  if(server)await new Promise(resolve=>server.close(resolve));
+  await pool.end();
+}
+process.on('SIGTERM',()=>shutdown('SIGTERM').then(()=>process.exit(0)).catch(()=>process.exit(1)));
+process.on('SIGINT',()=>shutdown('SIGINT').then(()=>process.exit(0)).catch(()=>process.exit(1)));
+initDb().then(()=>{server=app.listen(PORT,()=>console.log(`BizKit 0.8.0 running on port ${PORT}`))}).catch(e=>{console.error('Database initialization failed:',e);process.exit(1)});

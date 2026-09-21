@@ -13,7 +13,7 @@ const requiredServer=[
   'Insufficient stock','Payment exceeds the remaining invoice balance',
   '/api/payments/:id/reverse','/api/purchases/:id',
   '/api/purchases/:id/cancel','/api/suppliers/:id',
-  'convert-to-invoice','APP_TIMEZONE','dateValue','numberValue','idValue'
+  'convert-to-invoice','APP_TIMEZONE','dateValue','numberValue','idValue','password_reset_tokens','password_version','authLimiter','resetLimiter','Strict-Transport-Security'
 ];
 for(const x of requiredServer) if(!server.includes(x)) throw Error('Missing server feature: '+x);
 
@@ -27,18 +27,18 @@ for(const [file,src] of [['app.js',app],['app-router.js',router],['server.js',se
   try{new Function(src)}catch(e){throw Error('Syntax error in '+file+': '+e.message)}
 }
 
-if(pkg.version!=='0.7.3') throw Error('Package version mismatch');
+if(pkg.version!=='0.8.0') throw Error('Package version mismatch');
 
 for(const x of [
   'editCustomer','editProduct','editPurchase','editSupplier','deleteSupplier',
   'reversePayment','convertQuotationToInvoice','paymentTotal','exportTable',
-  'exportReport','resetQuoteModal','resetPaymentModal','todayISO','dateAfterISO'
+  'exportReport','resetQuoteModal','resetPaymentModal','todayISO','dateAfterISO','changePassword'
 ]) if(!app.includes(x)) throw Error('Missing frontend workflow: '+x);
 
 for(const x of [
   'customerOptions','purchaseProductOptions','invoiceBuilder','purchaseModalTitle',
   'supplierModalTitle','purchaseSaveBtn','supplierSaveBtn','updateQuoteSummary',
-  'updatePurchaseSummary','invoiceDeleteBtn','printInclude','inv_qty','q_qty'
+  'updatePurchaseSummary','invoiceDeleteBtn','printInclude','inv_qty','q_qty','forgot-password','reset-password','security_current','security_new','security_confirm'
 ]) if(!router.includes(x)) throw Error('Missing workflow UI: '+x);
 
 if((router.match(/function initInvoiceBuilder\(/g)||[]).length!==1) throw Error('Expected exactly one invoice builder initializer');
@@ -61,4 +61,4 @@ const constraints=server.includes('reversed_at IS NULL') &&
   server.includes('Invoices with payment history cannot be deleted');
 if(!constraints) throw Error('Core integrity hardening missing');
 
-console.log('BizKit 0.7.3 deep QA static smoke test passed.');
+console.log('BizKit 0.8.0 phase 4 production-readiness smoke test passed.');

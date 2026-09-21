@@ -20,3 +20,5 @@ services:
         sync: false
       - key: APP_TIMEZONE
         value: Asia/Kolkata
+
+# Optional password-reset email settings are configured in Render dashboard secrets.

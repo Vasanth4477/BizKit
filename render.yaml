@@ -20,5 +20,17 @@ services:
         sync: false
       - key: APP_TIMEZONE
         value: Asia/Kolkata
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        value: '587'
+      - key: SMTP_SECURE
+        value: 'false'
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: SMTP_FROM
+        sync: false
 
-# Optional password-reset email settings are configured in Render dashboard secrets.
+# Optional password-reset email settings require an SMTP provider and are entered as secrets in Render.

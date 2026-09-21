@@ -1,4 +1,4 @@
-# BizKit India 0.7.3
+# BizKit India 0.8.0
 
 A multi-page, PostgreSQL-backed small-business workspace for Indian businesses.
 
@@ -25,9 +25,12 @@ The public site and business workspace use dedicated HTML documents per route, w
 - Mobile navigation and responsive UI
 - Transaction-safe stock edits, invoice/purchase edits, purchase cancellation and invoice deletion guards
 - Render Docker deployment
+- Password change and secure password reset flows
+- Authentication and API rate limiting
+- Public privacy, terms and refund pages
 
 ## External APIs
-Razorpay Payment Links are implemented server-side. Credentials are optional and belong only in Render environment variables. WhatsApp and email have integration status slots but are intentionally not faked: their API credentials are required before they can send live messages.
+Razorpay Payment Links are implemented server-side. Credentials are optional and belong only in Render environment variables. Razorpay is implemented server-side. Password reset email delivery uses SMTP when the SMTP settings are configured. WhatsApp remains a status slot until its API credentials and send workflow are implemented.
 
 ## Required Render environment variables
-`DATABASE_URL`, `JWT_SECRET`. Optional: `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `PUBLIC_APP_URL`. Set `APP_TIMEZONE=Asia/Kolkata` for India-first date handling.
+`DATABASE_URL`, `JWT_SECRET`. Optional: `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `PUBLIC_APP_URL`, `APP_TIMEZONE`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`.

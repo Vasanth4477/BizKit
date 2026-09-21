@@ -68,6 +68,63 @@ app.use(express.static(ASSET_ROOT,{index:false}));
 // Auth
 app.post('/api/auth/signup',authLimiter,async(req,res)=>{try{const{name,email,password}=req.body||{},cleanName=String(name||'').trim(),em=normalizeEmail(email);if(!cleanName||!em||!password)return res.status(400).json({error:'Name, email and password are required'});if(String(password).length<6)return res.status(400).json({error:'Password must contain at least 6 characters'});const hash=await bcrypt.hash(String(password),12);const u=await withTransaction(async client=>{const user=(await client.query('INSERT INTO users(name,email,password_hash) VALUES($1,$2,$3) RETURNING id,name,email',[cleanName,em,hash])).rows[0];await client.query('INSERT INTO business_profiles(user_id,business_name,email) VALUES($1,$2,$3)',[user.id,cleanName,em]);await client.query('INSERT INTO integration_settings(user_id) VALUES($1) ON CONFLICT DO NOTHING',[user.id]);return user});res.status(201).json({user:u,token:tokenFor(u)})}catch(e){if(e.code==='23505')return res.status(409).json({error:'An account with this email already exists'});console.error(e);res.status(500).json({error:'Could not create account'})}});
 app.post('/api/auth/login',authLimiter,async(req,res)=>{try{const em=normalizeEmail(req.body?.email),password=String(req.body?.password??'');if(!em||password.length<1)return res.status(400).json({error:'Email and password are required'});const u=row(await q('SELECT * FROM users WHERE email=$1',[em]));if(!u||!(await bcrypt.compare(password,u.password_hash)))return res.status(401).json({error:'Email or password is incorrect'});res.json({user:{id:Number(u.id),name:u.name,email:u.email},token:tokenFor(u)})}catch{res.status(500).json({error:'Could not log in'})}});
+
+function smtpConfigured(){return Boolean(process.env.SMTP_HOST&&process.env.SMTP_USER&&process.env.SMTP_PASS&&process.env.SMTP_FROM)}
+async function sendPasswordResetEmail(email,name,token){
+  if(!smtpConfigured())return false;
+  const transporter=nodemailer.createTransport({host:process.env.SMTP_HOST,port:Number(process.env.SMTP_PORT||587),secure:String(process.env.SMTP_SECURE||'false')==='true',auth:{user:process.env.SMTP_USER,pass:process.env.SMTP_PASS}});
+  const base=String(process.env.PUBLIC_APP_URL||'https://bizkit-1kc8.onrender.com').replace(/\/$/,'');
+  const link=base+'/reset-password?token='+encodeURIComponent(token);
+  await transporter.sendMail({from:process.env.SMTP_FROM,to:email,subject:'Reset your BizKit password',text:'Hello '+name+',\\n\\nUse this link to reset your BizKit password: '+link+'\\n\\nThis link expires in 30 minutes. If you did not request this, you can ignore this email.\\n',html:'<p>Hello '+String(name).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))+',</p><p>Use the link below to reset your BizKit password. It expires in 30 minutes.</p><p><a href="'+link+'">Reset BizKit password</a></p><p>If you did not request this, you can ignore this email.</p>'});
+  return true;
+}
+app.post('/api/auth/forgot-password',resetLimiter,async(req,res)=>{
+  const email=normalizeEmail(req.body?.email);
+  if(!email)return res.status(400).json({error:'Email is required'});
+  try{
+    const u=row(await q('SELECT id,name,email FROM users WHERE email=$1',[email]));
+    if(u){
+      const token=crypto.randomBytes(32).toString('hex');
+      const hash=crypto.createHash('sha256').update(token).digest('hex');
+      await withTransaction(async client=>{
+        await client.query('DELETE FROM password_reset_tokens WHERE user_id=$1 OR expires_at<NOW()',[u.id]);
+        await client.query('INSERT INTO password_reset_tokens(user_id,token_hash,expires_at) VALUES($1,$2,NOW()+INTERVAL \'30 minutes\')',[u.id,hash]);
+      });
+      try{await sendPasswordResetEmail(u.email,u.name,token)}catch(e){console.error('Password reset email failed:',e.message||e)}
+    }
+    res.status(202).json({message:'If an account exists for that email, a password reset link has been sent.'});
+  }catch(e){console.error(e);res.status(500).json({error:'Could not start password reset'})}
+});
+app.post('/api/auth/reset-password',resetLimiter,async(req,res)=>{
+  const token=String(req.body?.token||'').trim(),newPassword=String(req.body?.newPassword??'');
+  if(!/^[a-f0-9]{64}$/i.test(token)||newPassword.length<8)return res.status(400).json({error:'A valid reset token and a password of at least 8 characters are required'});
+  const hash=crypto.createHash('sha256').update(token).digest('hex');
+  try{
+    const result=await withTransaction(async client=>{
+      const rowResult=(await client.query('SELECT u.id,u.name,u.email,r.id AS reset_id FROM password_reset_tokens r JOIN users u ON u.id=r.user_id WHERE r.token_hash=$1 AND r.used_at IS NULL AND r.expires_at>NOW() FOR UPDATE',[hash])).rows[0];
+      if(!rowResult)throw Object.assign(new Error('Reset link is invalid or expired'),{status:400});
+      const passwordHash=await bcrypt.hash(newPassword,12);
+      const user=(await client.query('UPDATE users SET password_hash=$1,password_version=password_version+1 WHERE id=$2 RETURNING id,name,email,password_version',[passwordHash,rowResult.id])).rows[0];
+      await client.query('UPDATE password_reset_tokens SET used_at=NOW() WHERE id=$1',[rowResult.reset_id]);
+      await client.query('DELETE FROM password_reset_tokens WHERE user_id=$1 AND id<>$2',[rowResult.id,rowResult.reset_id]);
+      return user;
+    });
+    res.json({ok:true,message:'Password reset successfully. You can now sign in.',token:tokenFor(result),user:{id:Number(result.id),name:result.name,email:result.email}});
+  }catch(e){res.status(e.status||500).json({error:e.message||'Could not reset password'})}
+});
+app.post('/api/auth/change-password',auth,resetLimiter,async(req,res)=>{
+  const currentPassword=String(req.body?.currentPassword??''),newPassword=String(req.body?.newPassword??'');
+  if(currentPassword.length<1||newPassword.length<8)return res.status(400).json({error:'Current password and a new password of at least 8 characters are required'});
+  if(currentPassword===newPassword)return res.status(400).json({error:'New password must be different from the current password'});
+  try{
+    const u=row(await q('SELECT id,name,email,password_hash FROM users WHERE id=$1',[req.user.id]));
+    if(!u||!(await bcrypt.compare(currentPassword,u.password_hash)))return res.status(401).json({error:'Current password is incorrect'});
+    const hash=await bcrypt.hash(newPassword,12);
+    const updated=await withTransaction(async client=>(await client.query('UPDATE users SET password_hash=$1,password_version=password_version+1 WHERE id=$2 RETURNING id,name,email,password_version',[hash,u.id])).rows[0]);
+    res.json({ok:true,message:'Password changed successfully.',token:tokenFor(updated),user:{id:Number(updated.id),name:updated.name,email:updated.email}});
+  }catch(e){res.status(500).json({error:'Could not change password'})}
+});
+
 app.get('/api/me',auth,async(req,res)=>res.json({user:row(await q('SELECT id,name,email,created_at FROM users WHERE id=$1',[req.user.id]))}));
 
 // Profile & integrations

@@ -3,8 +3,12 @@ const path=require('path');
 const bcrypt=require('bcryptjs');
 const jwt=require('jsonwebtoken');
 const {Pool}=require('pg');
+const crypto=require('crypto');
+const {rateLimit}=require('express-rate-limit');
+const nodemailer=require('nodemailer');
 const app=express();
 app.disable('x-powered-by');
+app.set('trust proxy',1);
 const PORT=process.env.PORT||3000;
 const JWT_SECRET=process.env.JWT_SECRET;
 const DATABASE_URL=process.env.DATABASE_URL;
@@ -20,12 +24,12 @@ const APP_TIMEZONE=process.env.APP_TIMEZONE||'Asia/Kolkata';
 function dateISO(d=new Date()){const p=Object.fromEntries(new Intl.DateTimeFormat('en-GB',{timeZone:APP_TIMEZONE,year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(d).filter(x=>x.type!=='literal').map(x=>[x.type,x.value]));return `${p.year}-${p.month}-${p.day}`}
 function normalizeEmail(v){return String(v||'').trim().toLowerCase()}
 function dateValue(v,fallback=null){const x=String(v??'').trim();if(!x)return fallback;if(!/^\d{4}-\d{2}-\d{2}$/.test(x))return fallback;const d=new Date(x+'T00:00:00Z');return d.toISOString().slice(0,10)===x?x:fallback}
-function tokenFor(u){return jwt.sign({id:u.id,email:u.email},JWT_SECRET,{expiresIn:'7d'})}
-function auth(req,res,next){const h=req.headers.authorization||'';if(!h.startsWith('Bearer '))return res.status(401).json({error:'Authentication required'});try{req.user=jwt.verify(h.slice(7),JWT_SECRET);next()}catch{return res.status(401).json({error:'Invalid or expired session'})}}
+function tokenFor(u){return jwt.sign({id:u.id,email:u.email,pv:Number(u.password_version||1)},JWT_SECRET,{expiresIn:'7d'})}
+async function auth(req,res,next){const h=req.headers.authorization||'';if(!h.startsWith('Bearer '))return res.status(401).json({error:'Authentication required'});try{const decoded=jwt.verify(h.slice(7),JWT_SECRET),u=row(await q('SELECT id,password_version FROM users WHERE id=$1',[decoded.id]));if(!u||Number(decoded.pv||1)!==Number(u.password_version||1))return res.status(401).json({error:'Session expired. Please log in again.'});req.user=decoded;next()}catch{return res.status(401).json({error:'Invalid or expired session'})}}
 function calcDoc(b){const items=Array.isArray(b.items)?b.items.map(x=>({productId:idValue(x.productId),name:String(x.name||'Item').trim(),qty:numberValue(x.qty,0),rate:numberValue(x.rate,0),gstRate:numberValue(x.gstRate??b.gstRate,0),amount:numberValue(x.qty,0)*numberValue(x.rate,0)})):[];const subtotal=items.reduce((a,x)=>a+x.amount,0);const discount=Math.max(0,numberValue(b.discount,0));const gstRate=Math.max(0,numberValue(b.gstRate,0));const taxable=Math.max(0,subtotal-discount);const gstAmount=taxable*gstRate/100;return{items,subtotal,discount,gstRate,gstAmount,total:taxable+gstAmount}}
 function calcPurchase(b){const raw=Array.isArray(b.items)?b.items:[],items=raw.map(x=>({productId:idValue(x.productId),name:String(x.name||'Item').trim(),qty:numberValue(x.qty,0),rate:numberValue(x.rate,0),amount:numberValue(x.qty,0)*numberValue(x.rate,0)}));const subtotal=items.reduce((a,x)=>a+x.amount,0),gstRate=Math.max(0,numberValue(b.gstRate,0)),gstAmount=subtotal*gstRate/100;return{items,subtotal,gstRate,gstAmount,total:subtotal+gstAmount}}
 async function initDb(){await q(`
-CREATE TABLE IF NOT EXISTS users(id BIGSERIAL PRIMARY KEY,name TEXT NOT NULL,email TEXT NOT NULL UNIQUE,password_hash TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+CREATE TABLE IF NOT EXISTS users(id BIGSERIAL PRIMARY KEY,name TEXT NOT NULL,email TEXT NOT NULL UNIQUE,password_hash TEXT NOT NULL,password_version INTEGER NOT NULL DEFAULT 1,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
 CREATE TABLE IF NOT EXISTS business_profiles(user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,business_name TEXT,business_type TEXT,phone TEXT,email TEXT,gstin TEXT,address TEXT,state TEXT,logo_url TEXT,currency TEXT DEFAULT 'INR');
 CREATE TABLE IF NOT EXISTS customers(id BIGSERIAL PRIMARY KEY,user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,name TEXT NOT NULL,phone TEXT,email TEXT,address TEXT,gstin TEXT,notes TEXT,created_at TIMESTAMPTZ DEFAULT NOW());
 CREATE TABLE IF NOT EXISTS suppliers(id BIGSERIAL PRIMARY KEY,user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,name TEXT NOT NULL,phone TEXT,email TEXT,address TEXT,gstin TEXT,notes TEXT,created_at TIMESTAMPTZ DEFAULT NOW());
@@ -39,6 +43,10 @@ CREATE TABLE IF NOT EXISTS purchases(id BIGSERIAL PRIMARY KEY,user_id BIGINT NOT
 CREATE TABLE IF NOT EXISTS activity(id BIGSERIAL PRIMARY KEY,user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,type TEXT NOT NULL,title TEXT NOT NULL,meta JSONB DEFAULT '{}',created_at TIMESTAMPTZ DEFAULT NOW());
 CREATE TABLE IF NOT EXISTS integration_settings(user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,razorpay_enabled BOOLEAN DEFAULT FALSE,whatsapp_enabled BOOLEAN DEFAULT FALSE,email_enabled BOOLEAN DEFAULT FALSE,updated_at TIMESTAMPTZ DEFAULT NOW());
 ALTER TABLE business_profiles ADD COLUMN IF NOT EXISTS currency TEXT DEFAULT 'INR';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS password_version INTEGER NOT NULL DEFAULT 1;
+CREATE TABLE IF NOT EXISTS password_reset_tokens(id BIGSERIAL PRIMARY KEY,user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,token_hash TEXT NOT NULL UNIQUE,expires_at TIMESTAMPTZ NOT NULL,used_at TIMESTAMPTZ,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_user ON password_reset_tokens(user_id);
+CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_expiry ON password_reset_tokens(expires_at);
 ALTER TABLE customers ADD COLUMN IF NOT EXISTS gstin TEXT;
 ALTER TABLE products ADD COLUMN IF NOT EXISTS unit TEXT DEFAULT 'pcs';
 ALTER TABLE invoices ADD COLUMN IF NOT EXISTS notes TEXT;
@@ -49,16 +57,80 @@ ALTER TABLE payments ADD COLUMN IF NOT EXISTS reversal_note TEXT;
 async function logActivity(userId,type,title,meta={}){try{await q('INSERT INTO activity(user_id,type,title,meta) VALUES($1,$2,$3,$4)',[userId,type,title,JSON.stringify(meta)])}catch{}}
 async function withTransaction(work){const client=await pool.connect();try{await client.query('BEGIN');const result=await work(client);await client.query('COMMIT');return result}catch(e){await client.query('ROLLBACK');throw e}finally{client.release()}}
 
-app.use((req,res,next)=>{res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','strict-origin-when-cross-origin');res.setHeader('X-Frame-Options','SAMEORIGIN');next()});
+app.use((req,res,next)=>{
+  const requestId=crypto.randomUUID();
+  req.requestId=requestId;
+  res.setHeader('X-Request-Id',requestId);
+  if(req.path.startsWith('/api/'))res.setHeader('Cache-Control','no-store');
+  res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','strict-origin-when-cross-origin');res.setHeader('X-Frame-Options','SAMEORIGIN');res.setHeader('Permissions-Policy','camera=(), microphone=(), geolocation=()');if(process.env.NODE_ENV==='production')res.setHeader('Strict-Transport-Security','max-age=31536000; includeSubDomains');next()});
 app.use(express.json({limit:'1mb'}));
 app.param('id',(req,res,next,id)=>/^[1-9]\d*$/.test(String(id))?next():res.status(400).json({error:'ID must be a positive integer'}));
+const authLimiter=rateLimit({windowMs:15*60*1000,limit:10,standardHeaders:'draft-8',legacyHeaders:false,message:{error:'Too many authentication attempts. Please try again later.'}}); const resetLimiter=rateLimit({windowMs:15*60*1000,limit:5,standardHeaders:'draft-8',legacyHeaders:false,message:{error:'Too many password reset attempts. Please try again later.'}}); const apiLimiter=rateLimit({windowMs:15*60*1000,limit:600,standardHeaders:'draft-8',legacyHeaders:false,skip:req=>req.path==='/health'});
+app.use('/api/',apiLimiter);
 // Deployment-safe asset root: works whether GitHub preserves /public or flattens files into repository root.
 const ASSET_ROOT = require('fs').existsSync(path.join(__dirname,'public','app.html')) ? path.join(__dirname,'public') : __dirname;
 app.use(express.static(ASSET_ROOT,{index:false}));
 
 // Auth
-app.post('/api/auth/signup',async(req,res)=>{try{const{name,email,password}=req.body||{},cleanName=String(name||'').trim(),em=normalizeEmail(email);if(!cleanName||!em||!password)return res.status(400).json({error:'Name, email and password are required'});if(String(password).length<6)return res.status(400).json({error:'Password must contain at least 6 characters'});const hash=await bcrypt.hash(String(password),12);const u=await withTransaction(async client=>{const user=(await client.query('INSERT INTO users(name,email,password_hash) VALUES($1,$2,$3) RETURNING id,name,email',[cleanName,em,hash])).rows[0];await client.query('INSERT INTO business_profiles(user_id,business_name,email) VALUES($1,$2,$3)',[user.id,cleanName,em]);await client.query('INSERT INTO integration_settings(user_id) VALUES($1) ON CONFLICT DO NOTHING',[user.id]);return user});res.status(201).json({user:u,token:tokenFor(u)})}catch(e){if(e.code==='23505')return res.status(409).json({error:'An account with this email already exists'});console.error(e);res.status(500).json({error:'Could not create account'})}});
-app.post('/api/auth/login',async(req,res)=>{try{const em=normalizeEmail(req.body?.email),password=String(req.body?.password??'');if(!em||password.length<1)return res.status(400).json({error:'Email and password are required'});const u=row(await q('SELECT * FROM users WHERE email=$1',[em]));if(!u||!(await bcrypt.compare(password,u.password_hash)))return res.status(401).json({error:'Email or password is incorrect'});res.json({user:{id:Number(u.id),name:u.name,email:u.email},token:tokenFor(u)})}catch{res.status(500).json({error:'Could not log in'})}});
+app.post('/api/auth/signup',authLimiter,async(req,res)=>{try{const{name,email,password}=req.body||{},cleanName=String(name||'').trim(),em=normalizeEmail(email);if(!cleanName||!em||!password)return res.status(400).json({error:'Name, email and password are required'});if(String(password).length<6)return res.status(400).json({error:'Password must contain at least 6 characters'});const hash=await bcrypt.hash(String(password),12);const u=await withTransaction(async client=>{const user=(await client.query('INSERT INTO users(name,email,password_hash) VALUES($1,$2,$3) RETURNING id,name,email',[cleanName,em,hash])).rows[0];await client.query('INSERT INTO business_profiles(user_id,business_name,email) VALUES($1,$2,$3)',[user.id,cleanName,em]);await client.query('INSERT INTO integration_settings(user_id) VALUES($1) ON CONFLICT DO NOTHING',[user.id]);return user});res.status(201).json({user:u,token:tokenFor(u)})}catch(e){if(e.code==='23505')return res.status(409).json({error:'An account with this email already exists'});console.error(e);res.status(500).json({error:'Could not create account'})}});
+app.post('/api/auth/login',authLimiter,async(req,res)=>{try{const em=normalizeEmail(req.body?.email),password=String(req.body?.password??'');if(!em||password.length<1)return res.status(400).json({error:'Email and password are required'});const u=row(await q('SELECT * FROM users WHERE email=$1',[em]));if(!u||!(await bcrypt.compare(password,u.password_hash)))return res.status(401).json({error:'Email or password is incorrect'});res.json({user:{id:Number(u.id),name:u.name,email:u.email},token:tokenFor(u)})}catch{res.status(500).json({error:'Could not log in'})}});
+
+function smtpConfigured(){return Boolean(process.env.SMTP_HOST&&process.env.SMTP_USER&&process.env.SMTP_PASS&&process.env.SMTP_FROM)}
+async function sendPasswordResetEmail(email,name,token){
+  if(!smtpConfigured())return false;
+  const transporter=nodemailer.createTransport({host:process.env.SMTP_HOST,port:Number(process.env.SMTP_PORT||587),secure:String(process.env.SMTP_SECURE||'false')==='true',auth:{user:process.env.SMTP_USER,pass:process.env.SMTP_PASS}});
+  const base=String(process.env.PUBLIC_APP_URL||'https://bizkit-1kc8.onrender.com').replace(/\/$/,'');
+  const link=base+'/reset-password?token='+encodeURIComponent(token);
+  await transporter.sendMail({from:process.env.SMTP_FROM,to:email,subject:'Reset your BizKit password',text:'Hello '+name+',\\n\\nUse this link to reset your BizKit password: '+link+'\\n\\nThis link expires in 30 minutes. If you did not request this, you can ignore this email.\\n',html:'<p>Hello '+String(name).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))+',</p><p>Use the link below to reset your BizKit password. It expires in 30 minutes.</p><p><a href="'+link+'">Reset BizKit password</a></p><p>If you did not request this, you can ignore this email.</p>'});
+  return true;
+}
+app.post('/api/auth/forgot-password',resetLimiter,async(req,res)=>{
+  const email=normalizeEmail(req.body?.email);
+  if(!email)return res.status(400).json({error:'Email is required'});
+  try{
+    const u=row(await q('SELECT id,name,email FROM users WHERE email=$1',[email]));
+    if(u){
+      const token=crypto.randomBytes(32).toString('hex');
+      const hash=crypto.createHash('sha256').update(token).digest('hex');
+      await withTransaction(async client=>{
+        await client.query('DELETE FROM password_reset_tokens WHERE user_id=$1 OR expires_at<NOW()',[u.id]);
+        await client.query('INSERT INTO password_reset_tokens(user_id,token_hash,expires_at) VALUES($1,$2,NOW()+INTERVAL \'30 minutes\')',[u.id,hash]);
+      });
+      try{await sendPasswordResetEmail(u.email,u.name,token)}catch(e){console.error('Password reset email failed:',e.message||e)}
+    }
+    res.status(202).json({message:'If an account exists for that email, a password reset link has been sent.'});
+  }catch(e){console.error(e);res.status(500).json({error:'Could not start password reset'})}
+});
+app.post('/api/auth/reset-password',resetLimiter,async(req,res)=>{
+  const token=String(req.body?.token||'').trim(),newPassword=String(req.body?.newPassword??'');
+  if(!/^[a-f0-9]{64}$/i.test(token)||newPassword.length<8)return res.status(400).json({error:'A valid reset token and a password of at least 8 characters are required'});
+  const hash=crypto.createHash('sha256').update(token).digest('hex');
+  try{
+    const result=await withTransaction(async client=>{
+      const rowResult=(await client.query('SELECT u.id,u.name,u.email,r.id AS reset_id FROM password_reset_tokens r JOIN users u ON u.id=r.user_id WHERE r.token_hash=$1 AND r.used_at IS NULL AND r.expires_at>NOW() FOR UPDATE',[hash])).rows[0];
+      if(!rowResult)throw Object.assign(new Error('Reset link is invalid or expired'),{status:400});
+      const passwordHash=await bcrypt.hash(newPassword,12);
+      const user=(await client.query('UPDATE users SET password_hash=$1,password_version=password_version+1 WHERE id=$2 RETURNING id,name,email,password_version',[passwordHash,rowResult.id])).rows[0];
+      await client.query('UPDATE password_reset_tokens SET used_at=NOW() WHERE id=$1',[rowResult.reset_id]);
+      await client.query('DELETE FROM password_reset_tokens WHERE user_id=$1 AND id<>$2',[rowResult.id,rowResult.reset_id]);
+      return user;
+    });
+    res.json({ok:true,message:'Password reset successfully. You can now sign in.',token:tokenFor(result),user:{id:Number(result.id),name:result.name,email:result.email}});
+  }catch(e){res.status(e.status||500).json({error:e.message||'Could not reset password'})}
+});
+app.post('/api/auth/change-password',auth,resetLimiter,async(req,res)=>{
+  const currentPassword=String(req.body?.currentPassword??''),newPassword=String(req.body?.newPassword??'');
+  if(currentPassword.length<1||newPassword.length<8)return res.status(400).json({error:'Current password and a new password of at least 8 characters are required'});
+  if(currentPassword===newPassword)return res.status(400).json({error:'New password must be different from the current password'});
+  try{
+    const u=row(await q('SELECT id,name,email,password_hash FROM users WHERE id=$1',[req.user.id]));
+    if(!u||!(await bcrypt.compare(currentPassword,u.password_hash)))return res.status(401).json({error:'Current password is incorrect'});
+    const hash=await bcrypt.hash(newPassword,12);
+    const updated=await withTransaction(async client=>(await client.query('UPDATE users SET password_hash=$1,password_version=password_version+1 WHERE id=$2 RETURNING id,name,email,password_version',[hash,u.id])).rows[0]);
+    res.json({ok:true,message:'Password changed successfully.',token:tokenFor(updated),user:{id:Number(updated.id),name:updated.name,email:updated.email}});
+  }catch(e){res.status(500).json({error:'Could not change password'})}
+});
+
 app.get('/api/me',auth,async(req,res)=>res.json({user:row(await q('SELECT id,name,email,created_at FROM users WHERE id=$1',[req.user.id]))}));
 
 // Profile & integrations
@@ -130,10 +202,27 @@ app.get('/api/search',auth,async(req,res)=>{const t=`%${String(req.query.q||'').
 app.post('/api/integrations/razorpay/payment-link',auth,async(req,res)=>{const key=process.env.RAZORPAY_KEY_ID,secret=process.env.RAZORPAY_KEY_SECRET;if(!key||!secret)return res.status(503).json({error:'Razorpay is not configured yet. Add RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET in Render.'});const b=req.body||{},amount=moneyInt(b.amount);if(amount<100)return res.status(400).json({error:'Amount must be at least ₹1.'});const reference=String(b.referenceId||`BIZ-${Date.now()}`).slice(0,40);try{const resp=await fetch('https://api.razorpay.com/v1/payment_links',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Basic '+Buffer.from(`${key}:${secret}`).toString('base64')},body:JSON.stringify({amount,currency:'INR',reference_id:reference,description:String(b.description||'BizKit payment'),customer:{name:String(b.customerName||'Customer'),contact:String(b.customerPhone||''),email:String(b.customerEmail||'')},notify:{sms:false,email:false},reminder_enable:true})});const data=await resp.json();if(!resp.ok)return res.status(resp.status).json({error:data?.error?.description||'Razorpay payment link creation failed'});res.json({id:data.id,short_url:data.short_url,status:data.status})}catch(e){res.status(502).json({error:'Unable to reach Razorpay'})}});
 
 app.get('/api/integrations/status',auth,async(req,res)=>res.json({razorpay:Boolean(process.env.RAZORPAY_KEY_ID&&process.env.RAZORPAY_KEY_SECRET),whatsapp:Boolean(process.env.WHATSAPP_TOKEN&&process.env.WHATSAPP_PHONE_NUMBER_ID),email:Boolean(process.env.SMTP_HOST&&process.env.SMTP_USER)}));
-app.get('/api/health',async(req,res)=>{try{await q('SELECT 1');const expected=['users','business_profiles','customers','suppliers','products','invoices','quotations','payments','expenses','stock_movements','purchases','activity','integration_settings'];const tableCount=Number((await q('SELECT COUNT(*)::int c FROM information_schema.tables WHERE table_schema=$1 AND table_name=ANY($2::text[])',['public',expected])).rows[0].c);const cols=Number((await q('SELECT COUNT(*)::int c FROM information_schema.columns WHERE table_schema=$1 AND ((table_name=$2 AND column_name=ANY($3::text[])) OR (table_name=$4 AND column_name=ANY($5::text[])))',['public','business_profiles',['currency'],'payments',['reversed_at','reversal_note']])).rows[0].c);if(tableCount!==expected.length||cols!==3)return res.status(503).json({ok:false,error:'Database schema is not ready'});res.json({ok:true,service:'BizKit',version:'0.7.3',database:'postgresql',features:['dashboard','invoices','quotations','customers','products','inventory','suppliers','purchases','payments','expenses','reports','search','razorpay-adapter']})}catch(e){res.status(503).json({ok:false,error:'Database unavailable'})}});
+app.get('/api/health',async(req,res)=>{try{await q('SELECT 1');const expected=['users','business_profiles','customers','suppliers','products','invoices','quotations','payments','expenses','stock_movements','purchases','activity','integration_settings','password_reset_tokens'];const tableCount=Number((await q('SELECT COUNT(*)::int c FROM information_schema.tables WHERE table_schema=$1 AND table_name=ANY($2::text[])',['public',expected])).rows[0].c);const cols=Number((await q('SELECT COUNT(*)::int c FROM information_schema.columns WHERE table_schema=$1 AND ((table_name=$2 AND column_name=ANY($3::text[])) OR (table_name=$4 AND column_name=ANY($5::text[])) OR (table_name=$6 AND column_name=ANY($7::text[])))',['public','business_profiles',['currency'],'payments',['reversed_at','reversal_note'],'password_reset_tokens',['token_hash','expires_at','used_at']])).rows[0].c);if(tableCount!==expected.length||cols!==6)return res.status(503).json({ok:false,error:'Database schema is not ready'});res.json({ok:true,service:'BizKit',version:'0.8.0',database:'postgresql',features:['dashboard','invoices','quotations','customers','products','inventory','suppliers','purchases','payments','expenses','reports','search','razorpay-adapter']})}catch(e){res.status(503).json({ok:false,error:'Database unavailable'})}});
 
 // Page routes
-const PAGE_FILES={'/':'home.html','/features':'features.html','/pricing':'pricing.html','/resources':'resources.html','/login':'login.html','/signup':'signup.html','/app':'dashboard.html','/app/invoices':'invoices.html','/app/invoices/new':'invoice-new.html','/app/quotations':'quotations.html','/app/customers':'customers.html','/app/products':'products.html','/app/purchases':'purchases.html','/app/payments':'payments.html','/app/expenses':'expenses.html','/app/reports':'reports.html','/app/tools':'tools.html','/app/settings':'settings.html','/app/integrations':'integrations.html'};
+const PAGE_FILES={'/':'home.html','/features':'features.html','/pricing':'pricing.html','/resources':'resources.html','/privacy':'privacy.html','/terms':'terms.html','/refund':'refund.html','/login':'login.html','/signup':'signup.html','/forgot-password':'forgot-password.html','/reset-password':'reset-password.html','/app':'dashboard.html','/app/invoices':'invoices.html','/app/invoices/new':'invoice-new.html','/app/quotations':'quotations.html','/app/customers':'customers.html','/app/products':'products.html','/app/purchases':'purchases.html','/app/payments':'payments.html','/app/expenses':'expenses.html','/app/reports':'reports.html','/app/tools':'tools.html','/app/settings':'settings.html','/app/integrations':'integrations.html'};
 for(const [route,file] of Object.entries(PAGE_FILES)) app.get(route,(req,res)=>res.sendFile(path.join(ASSET_ROOT,'pages',file)));
 app.use((req,res)=>res.status(404).sendFile(path.join(ASSET_ROOT,'404.html')));
-initDb().then(()=>app.listen(PORT,()=>console.log(`BizKit 0.7.3 running on port ${PORT}`))).catch(e=>{console.error('Database initialization failed:',e);process.exit(1)});
+app.use((err,req,res,next)=>{
+  const status=Number.isInteger(err?.status)&&err.status>=400&&err.status<600?err.status:500;
+  console.error(JSON.stringify({requestId:req.requestId,method:req.method,path:req.originalUrl,status,error:err?.message||String(err)}));
+  if(res.headersSent)return next(err);
+  res.status(status).json({error:status===500?'Internal server error':(err?.message||'Request failed'),requestId:req.requestId});
+});
+let server;
+let shuttingDown=false;
+async function shutdown(signal){
+  if(shuttingDown)return;
+  shuttingDown=true;
+  console.log('BizKit shutting down:',signal);
+  if(server)await new Promise(resolve=>server.close(resolve));
+  await pool.end();
+}
+process.on('SIGTERM',()=>shutdown('SIGTERM').then(()=>process.exit(0)).catch(()=>process.exit(1)));
+process.on('SIGINT',()=>shutdown('SIGINT').then(()=>process.exit(0)).catch(()=>process.exit(1)));
+initDb().then(()=>{server=app.listen(PORT,()=>console.log(`BizKit 0.8.0 running on port ${PORT}`))}).catch(e=>{console.error('Database initialization failed:',e);process.exit(1)});

@@ -2,7 +2,7 @@ name: BizKit QA
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'phase4/**']
   pull_request:
     branches: [main]
 
@@ -15,6 +15,8 @@ jobs:
       - name: Use Node 20
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
+      - name: Install dependencies
+        run: npm install
       - name: Run static smoke test
-        run: node smoke-test.js
+        run: npm run smoke

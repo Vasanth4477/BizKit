@@ -13,3 +13,5 @@ IMPORTANT:
 
 The server now detects either /public/app.html or a root app.html automatically.
 The root copies of app.html, app.js, styles.css and 404.html are intentional.
+
+Phase 4 adds password change/reset flows. Configure SMTP in Render before relying on email-delivered reset links.

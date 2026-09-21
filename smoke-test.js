@@ -13,7 +13,7 @@ const requiredServer=[
   'Insufficient stock','Payment exceeds the remaining invoice balance',
   '/api/payments/:id/reverse','/api/purchases/:id',
   '/api/purchases/:id/cancel','/api/suppliers/:id',
-  'convert-to-invoice','APP_TIMEZONE','dateValue','numberValue','idValue','password_reset_tokens','password_version','authLimiter','resetLimiter','Strict-Transport-Security'
+  'convert-to-invoice','APP_TIMEZONE','dateValue','numberValue','idValue','password_reset_tokens','password_version','authLimiter','resetLimiter','Strict-Transport-Security','Permissions-Policy'
 ];
 for(const x of requiredServer) if(!server.includes(x)) throw Error('Missing server feature: '+x);
 
@@ -38,13 +38,17 @@ for(const x of [
 for(const x of [
   'customerOptions','purchaseProductOptions','invoiceBuilder','purchaseModalTitle',
   'supplierModalTitle','purchaseSaveBtn','supplierSaveBtn','updateQuoteSummary',
-  'updatePurchaseSummary','invoiceDeleteBtn','printInclude','inv_qty','q_qty','forgot-password','reset-password','security_current','security_new','security_confirm'
+  'updatePurchaseSummary','invoiceDeleteBtn','printInclude','inv_qty','q_qty','forgot-password','reset-password','security_current','security_new','security_confirm','privacy','terms','refund'
 ]) if(!router.includes(x)) throw Error('Missing workflow UI: '+x);
 
 if((router.match(/function initInvoiceBuilder\(/g)||[]).length!==1) throw Error('Expected exactly one invoice builder initializer');
 if((app.match(/\bqsa\s*=\s*s=>/g)||[]).length!==1) throw Error('Expected exactly one qsa helper');
 if((app.match(/\$\$/g)||[]).length) throw Error('Broken $$ helper remains');
 if((router.match(/new Date\(\)\.toISOString\(\)\.slice\(0,10\)/g)||[]).length) throw Error('UTC date defaults remain');
+if(!server.includes("app.post('/api/auth/forgot-password',resetLimiter")||!server.includes("app.post('/api/auth/reset-password',resetLimiter")||!server.includes("app.post('/api/auth/change-password',auth,resetLimiter")) throw Error('Password security routes are not rate limited');
+if(!server.includes('password_version=password_version+1')) throw Error('Password changes do not revoke older sessions');
+if(server.includes("res.json({token,resetToken"]) throw Error('Reset token appears to be returned directly');
+if(!server.includes("/privacy':'privacy.html")||!server.includes("/forgot-password':'forgot-password.html")) throw Error('Phase 4 page routing incomplete');
 
 const apiRoutes=[...server.matchAll(/app\.(get|post|put|patch|delete)\('([^']+)'/g)];
 for(const m of apiRoutes){

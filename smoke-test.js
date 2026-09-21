@@ -47,7 +47,7 @@ if((app.match(/\$\$/g)||[]).length) throw Error('Broken $$ helper remains');
 if((router.match(/new Date\(\)\.toISOString\(\)\.slice\(0,10\)/g)||[]).length) throw Error('UTC date defaults remain');
 if(!server.includes("app.post('/api/auth/forgot-password',resetLimiter")||!server.includes("app.post('/api/auth/reset-password',resetLimiter")||!server.includes("app.post('/api/auth/change-password',auth,resetLimiter")) throw Error('Password security routes are not rate limited');
 if(!server.includes('password_version=password_version+1')) throw Error('Password changes do not revoke older sessions');
-if(server.includes("res.json({token,resetToken"]) throw Error('Reset token appears to be returned directly');
+if(server.includes("res.json({token,resetToken")) throw Error('Reset token appears to be returned directly');
 if(!server.includes("/privacy':'privacy.html")||!server.includes("/forgot-password':'forgot-password.html")) throw Error('Phase 4 page routing incomplete');
 
 const apiRoutes=[...server.matchAll(/app\.(get|post|put|patch|delete)\('([^']+)'/g)];

@@ -1,4 +1,8 @@
 -- BizKit production QA hardening, 2026-09-20
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS password_version INTEGER NOT NULL DEFAULT 1;
+CREATE TABLE IF NOT EXISTS public.password_reset_tokens(id BIGSERIAL PRIMARY KEY,user_id BIGINT NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,token_hash TEXT NOT NULL UNIQUE,expires_at TIMESTAMPTZ NOT NULL,used_at TIMESTAMPTZ,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_user ON public.password_reset_tokens(user_id);
+CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_expiry ON public.password_reset_tokens(expires_at);
 ALTER TABLE public.business_profiles ADD COLUMN IF NOT EXISTS currency TEXT DEFAULT 'INR';
 ALTER TABLE public.customers ADD COLUMN IF NOT EXISTS gstin TEXT;
 ALTER TABLE public.products ADD COLUMN IF NOT EXISTS unit TEXT DEFAULT 'pcs';

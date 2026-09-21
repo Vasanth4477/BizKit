@@ -3,6 +3,9 @@ const path=require('path');
 const bcrypt=require('bcryptjs');
 const jwt=require('jsonwebtoken');
 const {Pool}=require('pg');
+const crypto=require('crypto');
+const {rateLimit}=require('express-rate-limit');
+const nodemailer=require('nodemailer');
 const app=express();
 app.disable('x-powered-by');
 const PORT=process.env.PORT||3000;
@@ -20,12 +23,12 @@ const APP_TIMEZONE=process.env.APP_TIMEZONE||'Asia/Kolkata';
 function dateISO(d=new Date()){const p=Object.fromEntries(new Intl.DateTimeFormat('en-GB',{timeZone:APP_TIMEZONE,year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(d).filter(x=>x.type!=='literal').map(x=>[x.type,x.value]));return `${p.year}-${p.month}-${p.day}`}
 function normalizeEmail(v){return String(v||'').trim().toLowerCase()}
 function dateValue(v,fallback=null){const x=String(v??'').trim();if(!x)return fallback;if(!/^\d{4}-\d{2}-\d{2}$/.test(x))return fallback;const d=new Date(x+'T00:00:00Z');return d.toISOString().slice(0,10)===x?x:fallback}
-function tokenFor(u){return jwt.sign({id:u.id,email:u.email},JWT_SECRET,{expiresIn:'7d'})}
-function auth(req,res,next){const h=req.headers.authorization||'';if(!h.startsWith('Bearer '))return res.status(401).json({error:'Authentication required'});try{req.user=jwt.verify(h.slice(7),JWT_SECRET);next()}catch{return res.status(401).json({error:'Invalid or expired session'})}}
+function tokenFor(u){return jwt.sign({id:u.id,email:u.email,pv:Number(u.password_version||1)},JWT_SECRET,{expiresIn:'7d'})}
+async function auth(req,res,next){const h=req.headers.authorization||'';if(!h.startsWith('Bearer '))return res.status(401).json({error:'Authentication required'});try{const decoded=jwt.verify(h.slice(7),JWT_SECRET),u=row(await q('SELECT id,password_version FROM users WHERE id=$1',[decoded.id]));if(!u||Number(decoded.pv||1)!==Number(u.password_version||1))return res.status(401).json({error:'Session expired. Please log in again.'});req.user=decoded;next()}catch{return res.status(401).json({error:'Invalid or expired session'})}}
 function calcDoc(b){const items=Array.isArray(b.items)?b.items.map(x=>({productId:idValue(x.productId),name:String(x.name||'Item').trim(),qty:numberValue(x.qty,0),rate:numberValue(x.rate,0),gstRate:numberValue(x.gstRate??b.gstRate,0),amount:numberValue(x.qty,0)*numberValue(x.rate,0)})):[];const subtotal=items.reduce((a,x)=>a+x.amount,0);const discount=Math.max(0,numberValue(b.discount,0));const gstRate=Math.max(0,numberValue(b.gstRate,0));const taxable=Math.max(0,subtotal-discount);const gstAmount=taxable*gstRate/100;return{items,subtotal,discount,gstRate,gstAmount,total:taxable+gstAmount}}
 function calcPurchase(b){const raw=Array.isArray(b.items)?b.items:[],items=raw.map(x=>({productId:idValue(x.productId),name:String(x.name||'Item').trim(),qty:numberValue(x.qty,0),rate:numberValue(x.rate,0),amount:numberValue(x.qty,0)*numberValue(x.rate,0)}));const subtotal=items.reduce((a,x)=>a+x.amount,0),gstRate=Math.max(0,numberValue(b.gstRate,0)),gstAmount=subtotal*gstRate/100;return{items,subtotal,gstRate,gstAmount,total:subtotal+gstAmount}}
 async function initDb(){await q(`
-CREATE TABLE IF NOT EXISTS users(id BIGSERIAL PRIMARY KEY,name TEXT NOT NULL,email TEXT NOT NULL UNIQUE,password_hash TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+CREATE TABLE IF NOT EXISTS users(id BIGSERIAL PRIMARY KEY,name TEXT NOT NULL,email TEXT NOT NULL UNIQUE,password_hash TEXT NOT NULL,password_version INTEGER NOT NULL DEFAULT 1,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
 CREATE TABLE IF NOT EXISTS business_profiles(user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,business_name TEXT,business_type TEXT,phone TEXT,email TEXT,gstin TEXT,address TEXT,state TEXT,logo_url TEXT,currency TEXT DEFAULT 'INR');
 CREATE TABLE IF NOT EXISTS customers(id BIGSERIAL PRIMARY KEY,user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,name TEXT NOT NULL,phone TEXT,email TEXT,address TEXT,gstin TEXT,notes TEXT,created_at TIMESTAMPTZ DEFAULT NOW());
 CREATE TABLE IF NOT EXISTS suppliers(id BIGSERIAL PRIMARY KEY,user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,name TEXT NOT NULL,phone TEXT,email TEXT,address TEXT,gstin TEXT,notes TEXT,created_at TIMESTAMPTZ DEFAULT NOW());
@@ -39,6 +42,10 @@ CREATE TABLE IF NOT EXISTS purchases(id BIGSERIAL PRIMARY KEY,user_id BIGINT NOT
 CREATE TABLE IF NOT EXISTS activity(id BIGSERIAL PRIMARY KEY,user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,type TEXT NOT NULL,title TEXT NOT NULL,meta JSONB DEFAULT '{}',created_at TIMESTAMPTZ DEFAULT NOW());
 CREATE TABLE IF NOT EXISTS integration_settings(user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,razorpay_enabled BOOLEAN DEFAULT FALSE,whatsapp_enabled BOOLEAN DEFAULT FALSE,email_enabled BOOLEAN DEFAULT FALSE,updated_at TIMESTAMPTZ DEFAULT NOW());
 ALTER TABLE business_profiles ADD COLUMN IF NOT EXISTS currency TEXT DEFAULT 'INR';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS password_version INTEGER NOT NULL DEFAULT 1;
+CREATE TABLE IF NOT EXISTS password_reset_tokens(id BIGSERIAL PRIMARY KEY,user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,token_hash TEXT NOT NULL UNIQUE,expires_at TIMESTAMPTZ NOT NULL,used_at TIMESTAMPTZ,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_user ON password_reset_tokens(user_id);
+CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_expiry ON password_reset_tokens(expires_at);
 ALTER TABLE customers ADD COLUMN IF NOT EXISTS gstin TEXT;
 ALTER TABLE products ADD COLUMN IF NOT EXISTS unit TEXT DEFAULT 'pcs';
 ALTER TABLE invoices ADD COLUMN IF NOT EXISTS notes TEXT;
@@ -52,13 +59,15 @@ async function withTransaction(work){const client=await pool.connect();try{await
 app.use((req,res,next)=>{res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','strict-origin-when-cross-origin');res.setHeader('X-Frame-Options','SAMEORIGIN');next()});
 app.use(express.json({limit:'1mb'}));
 app.param('id',(req,res,next,id)=>/^[1-9]\d*$/.test(String(id))?next():res.status(400).json({error:'ID must be a positive integer'}));
+const authLimiter=rateLimit({windowMs:15*60*1000,limit:10,standardHeaders:'draft-8',legacyHeaders:false,message:{error:'Too many authentication attempts. Please try again later.'}}); const resetLimiter=rateLimit({windowMs:15*60*1000,limit:5,standardHeaders:'draft-8',legacyHeaders:false,message:{error:'Too many password reset attempts. Please try again later.'}}); const apiLimiter=rateLimit({windowMs:15*60*1000,limit:600,standardHeaders:'draft-8',legacyHeaders:false,skip:req=>req.path==='/health'});
+app.use('/api/',apiLimiter);
 // Deployment-safe asset root: works whether GitHub preserves /public or flattens files into repository root.
 const ASSET_ROOT = require('fs').existsSync(path.join(__dirname,'public','app.html')) ? path.join(__dirname,'public') : __dirname;
 app.use(express.static(ASSET_ROOT,{index:false}));
 
 // Auth
-app.post('/api/auth/signup',async(req,res)=>{try{const{name,email,password}=req.body||{},cleanName=String(name||'').trim(),em=normalizeEmail(email);if(!cleanName||!em||!password)return res.status(400).json({error:'Name, email and password are required'});if(String(password).length<6)return res.status(400).json({error:'Password must contain at least 6 characters'});const hash=await bcrypt.hash(String(password),12);const u=await withTransaction(async client=>{const user=(await client.query('INSERT INTO users(name,email,password_hash) VALUES($1,$2,$3) RETURNING id,name,email',[cleanName,em,hash])).rows[0];await client.query('INSERT INTO business_profiles(user_id,business_name,email) VALUES($1,$2,$3)',[user.id,cleanName,em]);await client.query('INSERT INTO integration_settings(user_id) VALUES($1) ON CONFLICT DO NOTHING',[user.id]);return user});res.status(201).json({user:u,token:tokenFor(u)})}catch(e){if(e.code==='23505')return res.status(409).json({error:'An account with this email already exists'});console.error(e);res.status(500).json({error:'Could not create account'})}});
-app.post('/api/auth/login',async(req,res)=>{try{const em=normalizeEmail(req.body?.email),password=String(req.body?.password??'');if(!em||password.length<1)return res.status(400).json({error:'Email and password are required'});const u=row(await q('SELECT * FROM users WHERE email=$1',[em]));if(!u||!(await bcrypt.compare(password,u.password_hash)))return res.status(401).json({error:'Email or password is incorrect'});res.json({user:{id:Number(u.id),name:u.name,email:u.email},token:tokenFor(u)})}catch{res.status(500).json({error:'Could not log in'})}});
+app.post('/api/auth/signup',authLimiter,async(req,res)=>{try{const{name,email,password}=req.body||{},cleanName=String(name||'').trim(),em=normalizeEmail(email);if(!cleanName||!em||!password)return res.status(400).json({error:'Name, email and password are required'});if(String(password).length<6)return res.status(400).json({error:'Password must contain at least 6 characters'});const hash=await bcrypt.hash(String(password),12);const u=await withTransaction(async client=>{const user=(await client.query('INSERT INTO users(name,email,password_hash) VALUES($1,$2,$3) RETURNING id,name,email',[cleanName,em,hash])).rows[0];await client.query('INSERT INTO business_profiles(user_id,business_name,email) VALUES($1,$2,$3)',[user.id,cleanName,em]);await client.query('INSERT INTO integration_settings(user_id) VALUES($1) ON CONFLICT DO NOTHING',[user.id]);return user});res.status(201).json({user:u,token:tokenFor(u)})}catch(e){if(e.code==='23505')return res.status(409).json({error:'An account with this email already exists'});console.error(e);res.status(500).json({error:'Could not create account'})}});
+app.post('/api/auth/login',authLimiter,async(req,res)=>{try{const em=normalizeEmail(req.body?.email),password=String(req.body?.password??'');if(!em||password.length<1)return res.status(400).json({error:'Email and password are required'});const u=row(await q('SELECT * FROM users WHERE email=$1',[em]));if(!u||!(await bcrypt.compare(password,u.password_hash)))return res.status(401).json({error:'Email or password is incorrect'});res.json({user:{id:Number(u.id),name:u.name,email:u.email},token:tokenFor(u)})}catch{res.status(500).json({error:'Could not log in'})}});
 app.get('/api/me',auth,async(req,res)=>res.json({user:row(await q('SELECT id,name,email,created_at FROM users WHERE id=$1',[req.user.id]))}));
 
 // Profile & integrations

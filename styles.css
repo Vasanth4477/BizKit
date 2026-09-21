@@ -192,3 +192,10 @@ button,input,select,textarea{font:inherit}button{cursor:pointer}a{color:inherit;
  .toolNote{max-width:none;margin-top:14px}
  .settingsTabs{overflow:auto}
 }
+
+
+/* Phase 4 trust + account surfaces */
+.legalPage{max-width:860px;margin:0 auto}.legalPage h1{margin:10px 0 6px}.legalPage .card{margin-top:22px}.legalPage h3{margin:24px 0 8px}.legalPage h3:first-child{margin-top:0}.legalPage p{line-height:1.7}
+.siteFooter{border-top:1px solid var(--line);padding:22px 0;color:var(--muted)}.footerInner{display:flex;justify-content:space-between;gap:20px;align-items:center}.footerInner nav{display:flex;gap:18px}.footerInner a{font-size:13px}
+.successBox{margin-top:12px;padding:10px 12px;border:1px solid #b7ddc4;background:#effaf2;color:#176b39;border-radius:8px;font-size:13px}
+@media(max-width:760px){.footerInner{flex-direction:column;align-items:flex-start}.footerInner nav{flex-wrap:wrap;gap:12px}.legalPage .card{padding:18px}}

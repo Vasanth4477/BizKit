@@ -13,7 +13,7 @@ const requiredServer=[
   'Insufficient stock','Payment exceeds the remaining invoice balance',
   '/api/payments/:id/reverse','/api/purchases/:id',
   '/api/purchases/:id/cancel','/api/suppliers/:id',
-  'convert-to-invoice','APP_TIMEZONE','dateValue','numberValue','idValue','password_reset_tokens','password_version','authLimiter','resetLimiter','Strict-Transport-Security','Permissions-Policy','X-Request-Id','Cache-Control: no-store','trust proxy', 'SIGTERM','SIGINT','shuttingDown'
+  'convert-to-invoice','APP_TIMEZONE','dateValue','numberValue','idValue','password_reset_tokens','password_version','authLimiter','resetLimiter','Strict-Transport-Security','Permissions-Policy','X-Request-Id','Cache-Control','trust proxy','SIGTERM','SIGINT','shuttingDown'
 ];
 for(const x of requiredServer) if(!server.includes(x)) throw Error('Missing server feature: '+x);
 
@@ -51,6 +51,7 @@ if(server.includes("res.json({token,resetToken")) throw Error('Reset token appea
 if(!server.includes("/privacy':'privacy.html")||!server.includes("/forgot-password':'forgot-password.html")) throw Error('Phase 4 page routing incomplete');
 if(!server.includes("'password_reset_tokens'")) throw Error('Health readiness does not include reset-token storage');
 if(!server.includes('tableCount!==expected.length||cols!==6')) throw Error('Health readiness column checks are incomplete');
+if(!server.includes("res.setHeader('Cache-Control','no-store')")) throw Error('API responses are not marked no-store');
 
 const apiRoutes=[...server.matchAll(/app\.(get|post|put|patch|delete)\('([^']+)'/g)];
 for(const m of apiRoutes){

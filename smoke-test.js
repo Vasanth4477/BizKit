@@ -17,7 +17,7 @@ const requiredServer=[
 ];
 for(const x of requiredServer) if(!server.includes(x)) throw Error('Missing server feature: '+x);
 
-for(const x of ['app-router.js','pages/home.html','pages/invoices.html','pages/invoice-new.html','pages/integrations.html','migrations/001_qa_hardening.sql','migrations/002_api_role_access_hardening.sql'])
+for(const x of ['app-router.js','pages/home.html','pages/invoices.html','pages/invoice-new.html','pages/integrations.html','migrations/001_qa_hardening.sql','migrations/002_api_role_access_hardening.sql','integration-test.js'])
   if(!fs.existsSync(x)) throw Error('Missing asset: '+x);
 
 if(server.includes('better-sqlite3')) throw Error('SQLite still present');
@@ -27,7 +27,7 @@ for(const [file,src] of [['app.js',app],['app-router.js',router],['server.js',se
   try{new Function(src)}catch(e){throw Error('Syntax error in '+file+': '+e.message)}
 }
 
-if(pkg.version!=='0.8.0') throw Error('Package version mismatch');
+if(pkg.version!=='0.8.1') throw Error('Package version mismatch');
 
 for(const x of [
   'editCustomer','editProduct','editPurchase','editSupplier','deleteSupplier',
@@ -68,7 +68,7 @@ const constraints=server.includes('reversed_at IS NULL') &&
   server.includes('Invoices with payment history cannot be deleted');
 if(!constraints) throw Error('Core integrity hardening missing');
 
-console.log('BizKit 0.8.0 phase 4 production-readiness smoke test passed.');
+console.log('BizKit 0.8.1 static smoke test passed.');
 
 // Route-level authorization regression check. Every API endpoint that touches
 // account data must use the JWT auth middleware. Only these routes are public.
@@ -106,3 +106,10 @@ if(router.includes('minlength="6" required autocomplete="${signup?')) throw Erro
 if(!server.includes("console.warn('Password reset email skipped because SMTP is not configured')")) throw Error('Missing SMTP configuration diagnostics');
 const renderConfig=fs.readFileSync('render.yaml','utf8');
 if(!renderConfig.includes('healthCheckPath: /api/health')) throw Error('Render blueprint health-check path is not configured');
+
+if (!pkg.scripts['test:e2e']) throw Error('End-to-end test script is not configured');
+if (!server.includes("version:'0.8.1'") || !server.includes('BizKit 0.8.1 running on port')) throw Error('Runtime version markers are inconsistent');
+const workflow=fs.readFileSync('.github/workflows/qa.yml','utf8');
+for(const x of ['postgres:16','npm run test:e2e','production-smoke','/api/health','E2E_BASE_URL']) {
+  if(!workflow.includes(x)) throw Error('QA workflow is missing: '+x);
+}

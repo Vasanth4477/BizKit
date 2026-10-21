@@ -1,4 +1,4 @@
-# BizKit India 0.8.0
+# BizKit India 0.8.1
 
 A multi-page, PostgreSQL-backed small-business workspace for Indian businesses.
 
@@ -42,3 +42,7 @@ BizKit is an API-only application: browser pages call the Express API, which con
 Render's deployed service should have its Health Check Path set to `/api/health`. The same path is present in `render.yaml`; a manually created Render service may require that dashboard setting to be saved separately.
 
 Password reset email is enabled only when `SMTP_HOST`, `SMTP_USER`, `SMTP_PASS`, and `SMTP_FROM` are all configured. Until those secrets are configured in Render, the password reset endpoint intentionally keeps a generic response but no email can be delivered.
+
+## Release 0.8.1 verification
+
+The QA workflow runs an isolated PostgreSQL-backed end-to-end suite with two separate test accounts. It exercises tenant access boundaries and core invoice, payment, inventory, quotation, purchase, expense, password reset, SMTP delivery to a local test sink, and session-revocation flows. A post-merge production smoke job waits for Render to serve version `0.8.1`, then checks health, public authentication pages, request/security headers, and rejection of unauthenticated API requests. These tests use disposable CI data and never write test records to production.

@@ -316,16 +316,20 @@ async function main() {
     assert.equal(smtpMessages.length, 1, 'a reset email should be delivered to the SMTP test sink');
     assert.ok(smtpMessages[0].includes(emailA), 'reset email should target the account email');
     const normalizedMail = smtpMessages[0].replace(/=\r?\n/g, '');
-    const tokenMatch = normalizedMail.match(/http:\/\/127\.0\.0\.1:3100\/reset-password\?token=([a-f0-9]{64})/i);
-    assert.ok(tokenMatch, 'reset email should contain a 64-character token link');
-    const resetToken = tokenMatch[1];
-    assert.ok(!JSON.stringify(knownForgot).includes(resetToken), 'reset token must not be returned by the API');
+    const tokenCandidates = [...normalizedMail.matchAll(/http:\/\/127\.0\.0\.1:3100\/reset-password\?token=([a-f0-9]{64})/ig)]
+      .map(match => match[1].toLowerCase());
+    assert.ok(tokenCandidates.length, 'reset email should contain a 64-character token link');
 
     const tokenRow = (await db.query(
       'SELECT token_hash,expires_at,used_at FROM password_reset_tokens WHERE user_id=$1 ORDER BY id DESC LIMIT 1',
       [userAId]
     )).rows[0];
     assert.ok(tokenRow, 'password reset token should be persisted');
+    const resetToken = tokenCandidates.find(candidate =>
+      crypto.createHash('sha256').update(candidate).digest('hex') === tokenRow.token_hash
+    );
+    assert.ok(resetToken, 'reset email token should match the stored SHA-256 token hash; candidates=' + tokenCandidates.length);
+    assert.ok(!JSON.stringify(knownForgot).includes(resetToken), 'reset token must not be returned by the API');
     assert.equal(tokenRow.token_hash, crypto.createHash('sha256').update(resetToken).digest('hex'), 'only a SHA-256 token hash should be stored');
     assert.ok(new Date(tokenRow.expires_at).getTime() > Date.now(), 'reset token should not be expired at creation');
     assert.equal(tokenRow.used_at, null);

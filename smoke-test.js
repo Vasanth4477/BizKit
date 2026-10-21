@@ -79,7 +79,7 @@ const publicApiRoutes = new Set([
   '/api/auth/reset-password',
   '/api/health'
 ]);
-const apiRouteDeclarations = [...server.matchAll(/app\\.(?:get|post|put|patch|delete)\\('([^']+)',([^,\\n]+)/g)]
+const apiRouteDeclarations = [...server.matchAll(/app\.(?:get|post|put|patch|delete)\('([^']+)',([^,\n]+)/g)]
   .map(match => ({ path: match[1], firstMiddleware: match[2].trim() }))
   .filter(route => route.path.startsWith('/api/'));
 for (const route of apiRouteDeclarations) {

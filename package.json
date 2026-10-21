@@ -1,10 +1,11 @@
 {
   "name": "bizkit-india",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "private": true,
   "scripts": {
     "start": "node server.js",
-    "smoke": "node smoke-test.js"
+    "smoke": "node smoke-test.js",
+    "test:e2e": "node integration-test.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",

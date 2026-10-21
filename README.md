@@ -34,3 +34,11 @@ Razorpay Payment Links are implemented server-side. Credentials are optional and
 
 ## Required Render environment variables
 `DATABASE_URL`, `JWT_SECRET`. Optional: `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `PUBLIC_APP_URL`, `APP_TIMEZONE`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`.
+
+## Database access model and security hardening
+
+BizKit is an API-only application: browser pages call the Express API, which connects to PostgreSQL using server-side credentials. Supabase `anon` and `authenticated` roles are intentionally denied direct access to public business tables. A restrictive deny-all RLS policy protects each public table for those roles; the server-side database role continues to perform business operations. The server re-applies this protection during startup, including to newly created public tables and sequences. Do not expose server database credentials or a Supabase service-role key to the browser.
+
+Render's deployed service should have its Health Check Path set to `/api/health`. The same path is present in `render.yaml`; a manually created Render service may require that dashboard setting to be saved separately.
+
+Password reset email is enabled only when `SMTP_HOST`, `SMTP_USER`, `SMTP_PASS`, and `SMTP_FROM` are all configured. Until those secrets are configured in Render, the password reset endpoint intentionally keeps a generic response but no email can be delivered.

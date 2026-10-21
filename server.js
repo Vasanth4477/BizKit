@@ -54,6 +54,25 @@ ALTER TABLE quotations ADD COLUMN IF NOT EXISTS notes TEXT;
 ALTER TABLE payments ADD COLUMN IF NOT EXISTS reversed_at TIMESTAMPTZ;
 ALTER TABLE payments ADD COLUMN IF NOT EXISTS reversal_note TEXT;
 `)}
+
+async function hardenDataApiAccess(){
+  // BizKit's browser talks only to the authenticated Express API. Supabase
+  // anon/authenticated roles must never access business tables directly.
+  await q('REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM anon, authenticated');
+  await q('REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM anon, authenticated');
+  const tables=rows(await q("SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename"));
+  for(const {tablename} of tables){
+    const quoted='"'+String(tablename).replace(/"/g,'""')+'"';
+    await q(`ALTER TABLE public.${quoted} ENABLE ROW LEVEL SECURITY`);
+    const policy=row(await q('SELECT permissive FROM pg_policies WHERE schemaname=$1 AND tablename=$2 AND policyname=$3',['public',tablename,'bizkit_api_roles_deny_all']));
+    if(policy&&policy.permissive!=='RESTRICTIVE')await q(`DROP POLICY bizkit_api_roles_deny_all ON public.${quoted}`);
+    if(!policy||policy.permissive!=='RESTRICTIVE'){
+      await q(`CREATE POLICY bizkit_api_roles_deny_all ON public.${quoted} AS RESTRICTIVE FOR ALL TO anon, authenticated USING (false) WITH CHECK (false)`);
+    }
+  }
+  console.log('Applied Supabase API-role deny policies to '+tables.length+' public tables');
+}
+
 async function logActivity(userId,type,title,meta={}){try{await q('INSERT INTO activity(user_id,type,title,meta) VALUES($1,$2,$3,$4)',[userId,type,title,JSON.stringify(meta)])}catch{}}
 async function withTransaction(work){const client=await pool.connect();try{await client.query('BEGIN');const result=await work(client);await client.query('COMMIT');return result}catch(e){await client.query('ROLLBACK');throw e}finally{client.release()}}
 
@@ -72,7 +91,7 @@ const ASSET_ROOT = require('fs').existsSync(path.join(__dirname,'public','app.ht
 app.use(express.static(ASSET_ROOT,{index:false}));
 
 // Auth
-app.post('/api/auth/signup',authLimiter,async(req,res)=>{try{const{name,email,password}=req.body||{},cleanName=String(name||'').trim(),em=normalizeEmail(email);if(!cleanName||!em||!password)return res.status(400).json({error:'Name, email and password are required'});if(String(password).length<6)return res.status(400).json({error:'Password must contain at least 6 characters'});const hash=await bcrypt.hash(String(password),12);const u=await withTransaction(async client=>{const user=(await client.query('INSERT INTO users(name,email,password_hash) VALUES($1,$2,$3) RETURNING id,name,email',[cleanName,em,hash])).rows[0];await client.query('INSERT INTO business_profiles(user_id,business_name,email) VALUES($1,$2,$3)',[user.id,cleanName,em]);await client.query('INSERT INTO integration_settings(user_id) VALUES($1) ON CONFLICT DO NOTHING',[user.id]);return user});res.status(201).json({user:u,token:tokenFor(u)})}catch(e){if(e.code==='23505')return res.status(409).json({error:'An account with this email already exists'});console.error(e);res.status(500).json({error:'Could not create account'})}});
+app.post('/api/auth/signup',authLimiter,async(req,res)=>{try{const{name,email,password}=req.body||{},cleanName=String(name||'').trim(),em=normalizeEmail(email);if(!cleanName||!em||!password)return res.status(400).json({error:'Name, email and password are required'});if(String(password).length<8)return res.status(400).json({error:'Password must contain at least 8 characters'});const hash=await bcrypt.hash(String(password),12);const u=await withTransaction(async client=>{const user=(await client.query('INSERT INTO users(name,email,password_hash) VALUES($1,$2,$3) RETURNING id,name,email',[cleanName,em,hash])).rows[0];await client.query('INSERT INTO business_profiles(user_id,business_name,email) VALUES($1,$2,$3)',[user.id,cleanName,em]);await client.query('INSERT INTO integration_settings(user_id) VALUES($1) ON CONFLICT DO NOTHING',[user.id]);return user});res.status(201).json({user:u,token:tokenFor(u)})}catch(e){if(e.code==='23505')return res.status(409).json({error:'An account with this email already exists'});console.error(e);res.status(500).json({error:'Could not create account'})}});
 app.post('/api/auth/login',authLimiter,async(req,res)=>{try{const em=normalizeEmail(req.body?.email),password=String(req.body?.password??'');if(!em||password.length<1)return res.status(400).json({error:'Email and password are required'});const u=row(await q('SELECT * FROM users WHERE email=$1',[em]));if(!u||!(await bcrypt.compare(password,u.password_hash)))return res.status(401).json({error:'Email or password is incorrect'});res.json({user:{id:Number(u.id),name:u.name,email:u.email},token:tokenFor(u)})}catch{res.status(500).json({error:'Could not log in'})}});
 
 function smtpConfigured(){return Boolean(process.env.SMTP_HOST&&process.env.SMTP_USER&&process.env.SMTP_PASS&&process.env.SMTP_FROM)}
@@ -96,7 +115,7 @@ app.post('/api/auth/forgot-password',resetLimiter,async(req,res)=>{
         await client.query('DELETE FROM password_reset_tokens WHERE user_id=$1 OR expires_at<NOW()',[u.id]);
         await client.query('INSERT INTO password_reset_tokens(user_id,token_hash,expires_at) VALUES($1,$2,NOW()+INTERVAL \'30 minutes\')',[u.id,hash]);
       });
-      try{await sendPasswordResetEmail(u.email,u.name,token)}catch(e){console.error('Password reset email failed:',e.message||e)}
+      try{const sent=await sendPasswordResetEmail(u.email,u.name,token);if(!sent)console.warn('Password reset email skipped because SMTP is not configured')}catch(e){console.error('Password reset email failed:',e.message||e)}
     }
     res.status(202).json({message:'If an account exists for that email, a password reset link has been sent.'});
   }catch(e){console.error(e);res.status(500).json({error:'Could not start password reset'})}
@@ -136,7 +155,7 @@ app.get('/api/me',auth,async(req,res)=>res.json({user:row(await q('SELECT id,nam
 // Profile & integrations
 app.get('/api/profile',auth,async(req,res)=>res.json({profile:row(await q('SELECT business_name AS "businessName",business_type AS "businessType",phone,email,gstin,address,state,logo_url AS "logoUrl",currency FROM business_profiles WHERE user_id=$1',[req.user.id]))||{}}));
 app.put('/api/profile',auth,async(req,res)=>{const p=req.body||{};await q(`INSERT INTO business_profiles(user_id,business_name,business_type,phone,email,gstin,address,state,logo_url,currency) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(user_id) DO UPDATE SET business_name=EXCLUDED.business_name,business_type=EXCLUDED.business_type,phone=EXCLUDED.phone,email=EXCLUDED.email,gstin=EXCLUDED.gstin,address=EXCLUDED.address,state=EXCLUDED.state,logo_url=EXCLUDED.logo_url,currency=EXCLUDED.currency`,[req.user.id,p.businessName||'',p.businessType||'',p.phone||'',p.email||'',p.gstin||'',p.address||'',p.state||'',p.logoUrl||'',p.currency||'INR']);await logActivity(req.user.id,'settings','Business profile updated');res.json({ok:true})});
-app.get('/api/integrations',auth,async(req,res)=>{const s=row(await q('SELECT * FROM integration_settings WHERE user_id=$1',[req.user.id]))||{};res.json({configured:{razorpay:Boolean(process.env.RAZORPAY_KEY_ID&&process.env.RAZORPAY_KEY_SECRET),whatsapp:Boolean(process.env.WHATSAPP_TOKEN&&process.env.WHATSAPP_PHONE_NUMBER_ID),email:Boolean(process.env.SMTP_HOST&&process.env.SMTP_USER)}})});
+app.get('/api/integrations',auth,async(req,res)=>{const s=row(await q('SELECT * FROM integration_settings WHERE user_id=$1',[req.user.id]))||{};res.json({configured:{razorpay:Boolean(process.env.RAZORPAY_KEY_ID&&process.env.RAZORPAY_KEY_SECRET),whatsapp:Boolean(process.env.WHATSAPP_TOKEN&&process.env.WHATSAPP_PHONE_NUMBER_ID),email:smtpConfigured()}})});
 
 // Customers
 app.get('/api/customers',auth,async(req,res)=>res.json({customers:rows(await q('SELECT * FROM customers WHERE user_id=$1 ORDER BY id DESC',[req.user.id]))}));
@@ -201,7 +220,7 @@ app.get('/api/search',auth,async(req,res)=>{const t=`%${String(req.query.q||'').
 // Razorpay Payment Links integration. Requires RAZORPAY_KEY_ID/SECRET in Render.
 app.post('/api/integrations/razorpay/payment-link',auth,async(req,res)=>{const key=process.env.RAZORPAY_KEY_ID,secret=process.env.RAZORPAY_KEY_SECRET;if(!key||!secret)return res.status(503).json({error:'Razorpay is not configured yet. Add RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET in Render.'});const b=req.body||{},amount=moneyInt(b.amount);if(amount<100)return res.status(400).json({error:'Amount must be at least ₹1.'});const reference=String(b.referenceId||`BIZ-${Date.now()}`).slice(0,40);try{const resp=await fetch('https://api.razorpay.com/v1/payment_links',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Basic '+Buffer.from(`${key}:${secret}`).toString('base64')},body:JSON.stringify({amount,currency:'INR',reference_id:reference,description:String(b.description||'BizKit payment'),customer:{name:String(b.customerName||'Customer'),contact:String(b.customerPhone||''),email:String(b.customerEmail||'')},notify:{sms:false,email:false},reminder_enable:true})});const data=await resp.json();if(!resp.ok)return res.status(resp.status).json({error:data?.error?.description||'Razorpay payment link creation failed'});res.json({id:data.id,short_url:data.short_url,status:data.status})}catch(e){res.status(502).json({error:'Unable to reach Razorpay'})}});
 
-app.get('/api/integrations/status',auth,async(req,res)=>res.json({razorpay:Boolean(process.env.RAZORPAY_KEY_ID&&process.env.RAZORPAY_KEY_SECRET),whatsapp:Boolean(process.env.WHATSAPP_TOKEN&&process.env.WHATSAPP_PHONE_NUMBER_ID),email:Boolean(process.env.SMTP_HOST&&process.env.SMTP_USER)}));
+app.get('/api/integrations/status',auth,async(req,res)=>res.json({razorpay:Boolean(process.env.RAZORPAY_KEY_ID&&process.env.RAZORPAY_KEY_SECRET),whatsapp:Boolean(process.env.WHATSAPP_TOKEN&&process.env.WHATSAPP_PHONE_NUMBER_ID),email:smtpConfigured()}));
 app.get('/api/health',async(req,res)=>{try{await q('SELECT 1');const expected=['users','business_profiles','customers','suppliers','products','invoices','quotations','payments','expenses','stock_movements','purchases','activity','integration_settings','password_reset_tokens'];const tableCount=Number((await q('SELECT COUNT(*)::int c FROM information_schema.tables WHERE table_schema=$1 AND table_name=ANY($2::text[])',['public',expected])).rows[0].c);const cols=Number((await q('SELECT COUNT(*)::int c FROM information_schema.columns WHERE table_schema=$1 AND ((table_name=$2 AND column_name=ANY($3::text[])) OR (table_name=$4 AND column_name=ANY($5::text[])) OR (table_name=$6 AND column_name=ANY($7::text[])))',['public','business_profiles',['currency'],'payments',['reversed_at','reversal_note'],'password_reset_tokens',['token_hash','expires_at','used_at']])).rows[0].c);if(tableCount!==expected.length||cols!==6)return res.status(503).json({ok:false,error:'Database schema is not ready'});res.json({ok:true,service:'BizKit',version:'0.8.0',database:'postgresql',features:['dashboard','invoices','quotations','customers','products','inventory','suppliers','purchases','payments','expenses','reports','search','razorpay-adapter']})}catch(e){res.status(503).json({ok:false,error:'Database unavailable'})}});
 
 // Page routes
@@ -225,4 +244,4 @@ async function shutdown(signal){
 }
 process.on('SIGTERM',()=>shutdown('SIGTERM').then(()=>process.exit(0)).catch(()=>process.exit(1)));
 process.on('SIGINT',()=>shutdown('SIGINT').then(()=>process.exit(0)).catch(()=>process.exit(1)));
-initDb().then(()=>{server=app.listen(PORT,()=>console.log(`BizKit 0.8.0 running on port ${PORT}`))}).catch(e=>{console.error('Database initialization failed:',e);process.exit(1)});
+initDb().then(async()=>{await hardenDataApiAccess();server=app.listen(PORT,()=>console.log(`BizKit 0.8.0 running on port ${PORT}`))}).catch(e=>{console.error('Database initialization failed:',e);process.exit(1)});

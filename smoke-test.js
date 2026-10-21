@@ -13,11 +13,11 @@ const requiredServer=[
   'Insufficient stock','Payment exceeds the remaining invoice balance',
   '/api/payments/:id/reverse','/api/purchases/:id',
   '/api/purchases/:id/cancel','/api/suppliers/:id',
-  'convert-to-invoice','APP_TIMEZONE','dateValue','numberValue','idValue','password_reset_tokens','password_version','authLimiter','resetLimiter','Strict-Transport-Security','Permissions-Policy','X-Request-Id','Cache-Control','trust proxy','SIGTERM','SIGINT','shuttingDown'
+  'convert-to-invoice','APP_TIMEZONE','dateValue','numberValue','idValue','password_reset_tokens','password_version','hardenDataApiAccess','bizkit_api_roles_deny_all','smtpConfigured()','authLimiter','resetLimiter','Strict-Transport-Security','Permissions-Policy','X-Request-Id','Cache-Control','trust proxy','SIGTERM','SIGINT','shuttingDown'
 ];
 for(const x of requiredServer) if(!server.includes(x)) throw Error('Missing server feature: '+x);
 
-for(const x of ['app-router.js','pages/home.html','pages/invoices.html','pages/invoice-new.html','pages/integrations.html','migrations/001_qa_hardening.sql'])
+for(const x of ['app-router.js','pages/home.html','pages/invoices.html','pages/invoice-new.html','pages/integrations.html','migrations/001_qa_hardening.sql','migrations/002_api_role_access_hardening.sql'])
   if(!fs.existsSync(x)) throw Error('Missing asset: '+x);
 
 if(server.includes('better-sqlite3')) throw Error('SQLite still present');
@@ -95,3 +95,14 @@ for (const route of publicApiRoutes) {
 if (apiRouteDeclarations.filter(route => route.path.startsWith('/api/') && !publicApiRoutes.has(route.path)).length < 45) {
   throw Error('Unexpected reduction in protected API route coverage');
 }
+
+const apiAccessMigration=fs.readFileSync('migrations/002_api_role_access_hardening.sql','utf8');
+for(const x of ['REVOKE ALL PRIVILEGES ON ALL TABLES','REVOKE ALL PRIVILEGES ON ALL SEQUENCES','AS RESTRICTIVE FOR ALL TO anon, authenticated','USING (false) WITH CHECK (false)']) {
+  if(!apiAccessMigration.includes(x)) throw Error('Database API access hardening missing: '+x);
+}
+if(!server.includes('initDb().then(async()=>{await hardenDataApiAccess();')) throw Error('Database API access hardening is not run at startup');
+if(!server.includes('String(password).length<8') || !server.includes('Password must contain at least 8 characters')) throw Error('Signup password minimum is inconsistent');
+if(router.includes('minlength="6" required autocomplete="${signup?')) throw Error('Signup form still accepts a 6-character password');
+if(!server.includes("console.warn('Password reset email skipped because SMTP is not configured')")) throw Error('Missing SMTP configuration diagnostics');
+const renderConfig=fs.readFileSync('render.yaml','utf8');
+if(!renderConfig.includes('healthCheckPath: /api/health')) throw Error('Render blueprint health-check path is not configured');

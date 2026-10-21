@@ -12,7 +12,7 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Use Node 20
+      - name: Use Node 22
         uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -20,3 +20,106 @@ jobs:
         run: npm install
       - name: Run static smoke test
         run: npm run smoke
+
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: bizkit_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d bizkit_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/bizkit_test
+      JWT_SECRET: integration-test-secret-with-at-least-32-characters
+      PORT: 3100
+      PGSSL: disable
+      APP_TIMEZONE: Asia/Kolkata
+      SMTP_HOST: 127.0.0.1
+      SMTP_PORT: 2525
+      SMTP_SECURE: 'false'
+      SMTP_USER: qa-user
+      SMTP_PASS: qa-pass
+      SMTP_FROM: BizKit QA <no-reply@example.test>
+      PUBLIC_APP_URL: http://127.0.0.1:3100
+      E2E_BASE_URL: http://127.0.0.1:3100
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Use Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm install
+      - name: Create Supabase API roles for DB-hardening tests
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE ROLE anon NOLOGIN;"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE ROLE authenticated NOLOGIN;"
+      - name: Start application
+        run: npm start > /tmp/bizkit-e2e-server.log 2>&1 &
+      - name: Wait for readiness
+        run: |
+          for attempt in $(seq 1 40); do
+            code=$(curl --silent --max-time 3 --output /tmp/bizkit-ready.json --write-out '%{http_code}' http://127.0.0.1:3100/api/health || true)
+            if [ "$code" = "200" ] && grep -q '"ok":true' /tmp/bizkit-ready.json; then
+              cat /tmp/bizkit-ready.json
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/bizkit-e2e-server.log
+          exit 1
+      - name: Run authenticated end-to-end scenarios
+        run: npm run test:e2e
+      - name: Show server logs on failure
+        if: failure()
+        run: cat /tmp/bizkit-e2e-server.log
+
+  production-smoke:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Wait for Render deployment and verify production
+        env:
+          BASE_URL: https://bizkit-1kc8.onrender.com
+        run: |
+          set -u
+          healthy=0
+          for attempt in $(seq 1 100); do
+            code=$(curl --silent --connect-timeout 5 --max-time 8 --output /tmp/bizkit-health.json --write-out '%{http_code}' "$BASE_URL/api/health" 2>/dev/null || true)
+            if [ "$code" = "200" ] && BODY="$(cat /tmp/bizkit-health.json)" node -e "const d=JSON.parse(process.env.BODY||'{}');process.exit(d.ok===true&&d.version==='0.8.1'?0:1)" 2>/dev/null; then
+              healthy=1
+              echo "Production health passed: $(cat /tmp/bizkit-health.json)"
+              break
+            fi
+            if [ $((attempt % 10)) -eq 0 ]; then
+              echo "Waiting for Render version 0.8.1 (attempt $attempt/100, HTTP $code)"
+            fi
+            sleep 5
+          done
+          if [ "$healthy" -ne 1 ]; then
+            echo "Render did not serve healthy BizKit 0.8.1 within the deployment window."
+            cat /tmp/bizkit-health.json || true
+            exit 1
+          fi
+          curl --silent --show-error --fail --dump-header /tmp/bizkit-headers.txt "$BASE_URL/api/health" --output /tmp/bizkit-health.json
+          grep -qi '^cache-control: no-store' /tmp/bizkit-headers.txt
+          grep -qi '^x-request-id:' /tmp/bizkit-headers.txt
+          grep -qi '^strict-transport-security:' /tmp/bizkit-headers.txt
+          for path in / /forgot-password /reset-password; do
+            code=$(curl --silent --connect-timeout 5 --max-time 10 --output /dev/null --write-out '%{http_code}' "$BASE_URL$path")
+            test "$code" = "200"
+          done
+          unauth_code=$(curl --silent --connect-timeout 5 --max-time 10 --output /dev/null --write-out '%{http_code}' "$BASE_URL/api/customers")
+          test "$unauth_code" = "401"
+          echo "Production smoke passed: health, security headers, auth pages and unauthenticated API rejection."

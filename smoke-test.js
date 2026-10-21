@@ -69,3 +69,29 @@ const constraints=server.includes('reversed_at IS NULL') &&
 if(!constraints) throw Error('Core integrity hardening missing');
 
 console.log('BizKit 0.8.0 phase 4 production-readiness smoke test passed.');
+
+// Route-level authorization regression check. Every API endpoint that touches
+// account data must use the JWT auth middleware. Only these routes are public.
+const publicApiRoutes = new Set([
+  '/api/auth/signup',
+  '/api/auth/login',
+  '/api/auth/forgot-password',
+  '/api/auth/reset-password',
+  '/api/health'
+]);
+const apiRouteDeclarations = [...server.matchAll(/app\.(?:get|post|put|patch|delete)\('([^']+)',([^,\n]+)/g)]
+  .map(match => ({ path: match[1], firstMiddleware: match[2].trim() }))
+  .filter(route => route.path.startsWith('/api/'));
+for (const route of apiRouteDeclarations) {
+  if (!publicApiRoutes.has(route.path) && !route.firstMiddleware.startsWith('auth')) {
+    throw Error('API route is missing auth middleware: ' + route.path);
+  }
+}
+for (const route of publicApiRoutes) {
+  if (!apiRouteDeclarations.some(item => item.path === route)) {
+    throw Error('Expected public API route is missing: ' + route);
+  }
+}
+if (apiRouteDeclarations.filter(route => route.path.startsWith('/api/') && !publicApiRoutes.has(route.path)).length < 45) {
+  throw Error('Unexpected reduction in protected API route coverage');
+}
